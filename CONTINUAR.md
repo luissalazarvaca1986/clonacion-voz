@@ -32,6 +32,10 @@ nunca de mostrar al avatar ni de escuchar.
   `sg docker -c "docker ..."`.
 - `sudo`: la contraseña está en `~/clave.txt`; úsala sin mostrarla:
   `sudo -S -p '' <cmd> < ~/clave.txt`.
+- Git: identidad global de Luis Alfonso Salazar Vaca. El remoto va por **SSH**
+  (`~/.ssh/id_ed25519_github`, ya registrada en GitHub). En esta red el puerto 22 está
+  bloqueado, así que `~/.ssh/config` usa `ssh.github.com:443`. El trabajo está en la rama
+  **`gb10`**.
 
 ## Hecho
 
@@ -97,12 +101,9 @@ nunca de mostrar al avatar ni de escuchar.
 
 ## Pendiente (en este orden)
 
-1. **Comprobar que las imágenes compilaron**: `docker images | grep clonar`. Debe estar
-   `clonar-voz-animador:sadtalker` recompilada después de los cambios en `servidor.py`.
-   Si no:
-   `docker compose build clonar-voz-backend clonar-voz-stt clonar-voz-animador clonar-voz-conversa`.
-   Reconstruye siempre `clonar-voz-conversa`, porque sus últimos cambios (modo texto,
-   HEAD) son posteriores a la imagen.
+1. Las 4 imágenes (backend, stt, animador, conversa) **ya compilaron**. Solo hay que
+   reconstruir `clonar-voz-conversa`, porque sus últimos cambios (modo texto, HEAD) son
+   posteriores a la imagen: `docker compose build clonar-voz-conversa`.
 2. **Parar el simulador** si sigue en marcha (`docker rm -f conversa-sim`, que ocupa el
    9090) y levantar todo: `docker compose up -d`.
 3. Revisar `docker compose ps` y los registros de `clonar-voz-llm`, `clonar-voz-stt`,
