@@ -222,6 +222,7 @@ services:
       - "9090:8080"
     volumes:
       - ./videos:/videos:ro                # MP4 que genera el backend
+      - ./audios/generados:/audios:ro      # WAV del modo «solo audio»
       - ./datos/conversa:/datos            # registro del bucle de reposo
     extra_hosts:
       - "host.docker.internal:host-gateway"   # Ollama y ChromaDB de SecondBrain
@@ -231,6 +232,8 @@ services:
       - CONVERSA_ESCENA=noche
       - CONVERSA_MAX_PALABRAS=260          # ≈ 2 minutos de voz
       - CONVERSA_CLIPS_EN_PARALELO=3
+      - CONVERSA_VIDEO=1                   # por defecto si la web no elige: 1 vídeo, 0 solo audio
+      - CONVERSA_RELLENO=1                 # «Déjame pensarlo, te respondo en breve.» al empezar cada respuesta
       - CONVERSA_OLLAMA_URL=http://host.docker.internal:11434
       - CONVERSA_CHROMA_URL=http://host.docker.internal:8100
     depends_on:

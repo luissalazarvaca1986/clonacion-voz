@@ -16,6 +16,7 @@ nuevo sustituye al anterior (que se cancela) en cuanto hay una transcripción re
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -57,6 +58,9 @@ CLIPS_EN_PARALELO = int(os.getenv("CONVERSA_CLIPS_EN_PARALELO", "3"))
 FRAGMENTOS = int(os.getenv("CONVERSA_FRAGMENTOS", "6"))
 SEGUNDOS_REPOSO = float(os.getenv("CONVERSA_SEGUNDOS_REPOSO", "8"))
 DIR_VIDEOS = Path(os.getenv("CONVERSA_DIR_VIDEOS", "/videos"))
+DIR_AUDIOS = Path(os.getenv("CONVERSA_DIR_AUDIOS", "/audios"))
+# Modo por defecto si la web no lo indica: vídeo animado (lento) o solo voz (rápido)
+VIDEO_POR_DEFECTO = os.getenv("CONVERSA_VIDEO", "1") == "1"
 DIR_DATOS = Path(os.getenv("CONVERSA_DIR_DATOS", "/datos"))
 HISTORIAL_TURNOS = 4
 CHROMA_BASE = "/api/v2/tenants/default_tenant/databases/default_database"
@@ -84,6 +88,7 @@ Reglas:
 class Turno:
     id: str
     sesion: str
+    video: bool = True                # False: solo voz, sin animar con SadTalker
     eventos: asyncio.Queue = field(default_factory=asyncio.Queue)
     terminado: bool = False
     cancelado: bool = False
@@ -229,44 +234,95 @@ async def clips_de_respuesta(frases: AsyncIterator[str]) -> AsyncIterator[str]:
         yield " ".join(actual)
 
 
+async def sintetizar(cliente: httpx.AsyncClient, texto: str, video: bool,
+                     tareas: set[str] | None = None) -> dict[str, Any]:
+    """Voz (+ vídeo animado de Luisa si `video`) con el backend. Devuelve el evento «fin»
+    con la URL pública del clip en `url`."""
+    r = await cliente.post(f"{BACKEND_URL}/api/generar", json={
+        "texto": texto, "voz": VOZ, "idioma": "es", "modo": "emocional",
+        **({"video": True, "avatar": AVATAR, "escena": ESCENA, "animado": ANIMADO}
+           if video else {"video": False}),
+    }, timeout=60)
+    if r.status_code >= 400:
+        raise RuntimeError(f"El backend rechazó el clip: {r.text[:300]}")
+    tarea = r.json()
+    if tareas is not None:
+        tareas.add(tarea["id"])
+    try:
+        async with cliente.stream("GET", f"{BACKEND_URL}/api/tarea/{tarea['id']}/eventos",
+                                  timeout=httpx.Timeout(10, read=None)) as flujo:
+            async for linea in flujo.aiter_lines():
+                if not linea.startswith("data:"):
+                    continue
+                ev = json.loads(linea[5:])
+                tipo = ev.get("tipo")
+                if tipo == "fin":
+                    if video:
+                        archivo = ev.get("video") or tarea.get("video")
+                        if not archivo:
+                            raise RuntimeError("El clip terminó sin vídeo.")
+                        ev["url"] = f"/videos/{archivo}"
+                    else:
+                        if not ev.get("archivo"):
+                            raise RuntimeError("El clip terminó sin audio.")
+                        ev["url"] = f"/audios/{ev['archivo']}"
+                    return ev
+                if tipo in ("error", "cancelada"):
+                    raise RuntimeError(ev.get("mensaje") or tipo)
+        raise RuntimeError("Se cortó la conexión con el backend.")
+    finally:
+        if tareas is not None:
+            tareas.discard(tarea["id"])
+
+
 async def generar_clip(turno: Turno, indice: int, texto: str) -> None:
-    """Un clip: voz + vídeo animado con el backend. Se emite en cuanto está listo."""
+    """Un clip de la respuesta. Se emite en cuanto está listo."""
     async with CLIPS:
         if turno.cancelado:
             return
         inicio = time.time()
         async with httpx.AsyncClient() as cliente:
-            r = await cliente.post(f"{BACKEND_URL}/api/generar", json={
-                "texto": texto, "voz": VOZ, "idioma": "es", "modo": "emocional",
-                "video": True, "avatar": AVATAR, "escena": ESCENA, "animado": ANIMADO,
-            }, timeout=60)
-            if r.status_code >= 400:
-                raise RuntimeError(f"El backend rechazó el clip {indice}: {r.text[:300]}")
-            tarea = r.json()
-            turno.tareas_backend.add(tarea["id"])
-            try:
-                async with cliente.stream("GET", f"{BACKEND_URL}/api/tarea/{tarea['id']}/eventos",
-                                          timeout=httpx.Timeout(10, read=None)) as flujo:
-                    async for linea in flujo.aiter_lines():
-                        if not linea.startswith("data:"):
-                            continue
-                        ev = json.loads(linea[5:])
-                        tipo = ev.get("tipo")
-                        if tipo == "fin":
-                            video = ev.get("video") or tarea.get("video")
-                            if not video:
-                                raise RuntimeError("El clip terminó sin vídeo.")
-                            log.info("Clip %d listo en %.1f s (%.1f s de audio)", indice,
-                                     time.time() - inicio, ev.get("duracion") or 0)
-                            await turno.emitir("clip", indice=indice, url=f"/videos/{video}",
-                                               texto=texto, duracion=ev.get("duracion"),
-                                               segundos=round(time.time() - inicio, 1))
-                            return
-                        if tipo in ("error", "cancelada"):
-                            raise RuntimeError(ev.get("mensaje") or tipo)
-                raise RuntimeError("Se cortó la conexión con el backend.")
-            finally:
-                turno.tareas_backend.discard(tarea["id"])
+            ev = await sintetizar(cliente, texto, turno.video, turno.tareas_backend)
+        log.info("Clip %d listo en %.1f s (%.1f s de audio)", indice,
+                 time.time() - inicio, ev.get("duracion") or 0)
+        await turno.emitir("clip", indice=indice, url=ev["url"],
+                           medio="video" if turno.video else "audio", texto=texto,
+                           duracion=ev.get("duracion"), segundos=round(time.time() - inicio, 1))
+
+
+# ---- Relleno: «Déjame pensarlo…» mientras se prepara la respuesta --------------
+TEXTO_RELLENO = os.getenv("CONVERSA_TEXTO_RELLENO", "Déjame pensarlo, te respondo en breve.")
+RELLENO = os.getenv("CONVERSA_RELLENO", "1") == "1"
+_relleno_cerrojo = asyncio.Lock()
+
+
+def _registro_relleno(video: bool) -> Path:
+    clave = hashlib.sha1(f"{TEXTO_RELLENO}|{VOZ}|{AVATAR}|{ESCENA}".encode()).hexdigest()[:10]
+    return DIR_DATOS / f"relleno-{'video' if video else 'audio'}-{clave}.json"
+
+
+def url_relleno(video: bool) -> str | None:
+    """URL del relleno ya generado, o None si aún no existe (o se borró)."""
+    if not RELLENO:
+        return None
+    try:
+        url = json.loads(_registro_relleno(video).read_text())["url"]
+    except (OSError, ValueError, KeyError):
+        return None
+    carpeta = DIR_VIDEOS if url.startswith("/videos/") else DIR_AUDIOS
+    return url if (carpeta / Path(url).name).is_file() else None
+
+
+async def crear_relleno(video: bool) -> str | None:
+    async with _relleno_cerrojo:
+        if url := url_relleno(video):
+            return url
+        async with httpx.AsyncClient() as cliente:
+            ev = await sintetizar(cliente, TEXTO_RELLENO, video)
+        DIR_DATOS.mkdir(parents=True, exist_ok=True)
+        _registro_relleno(video).write_text(json.dumps({"url": ev["url"]}))
+        log.info("Relleno (%s) creado: %s", "vídeo" if video else "audio", ev["url"])
+        return ev["url"]
 
 
 async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) -> None:
@@ -285,6 +341,8 @@ async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) ->
                 await _cancelar_turno(anterior)
             await turno.emitir("transcripcion", texto=pregunta,
                                segundos=round(time.time() - inicio, 2))
+            if relleno := url_relleno(turno.video):
+                await turno.emitir("relleno", url=relleno, texto=TEXTO_RELLENO)
 
             fragmentos = await buscar_contexto(cliente, pregunta)
             await turno.emitir("contexto", fuentes=sorted({f["documento"] for f in fragmentos}),
@@ -389,18 +447,35 @@ async def preparar_reposo() -> None:
     asyncio.create_task(intentar())
 
 
+@app.on_event("startup")
+async def preparar_relleno() -> None:
+    async def intentar(video: bool) -> None:
+        for _ in range(60):
+            try:
+                if await crear_relleno(video):
+                    return
+            except (httpx.HTTPError, RuntimeError) as e:
+                log.warning("Relleno (%s) pendiente: %s", "vídeo" if video else "audio", e)
+            await asyncio.sleep(30)
+    if RELLENO:
+        asyncio.create_task(intentar(False))   # el de audio primero: tarda segundos
+        asyncio.create_task(intentar(True))
+
+
 # ---- API -------------------------------------------------------------------------
 @app.post("/api/turno")
 async def crear_turno(audio: UploadFile | None = File(None), texto: str = Form(""),
-                      sesion: str = Form("anonima")) -> dict:
+                      sesion: str = Form("anonima"), medio: str = Form("")) -> dict:
     """Un turno a partir del audio del micrófono o, sin micrófono, de `texto`
-    (simula lo que habría transcrito el STT)."""
+    (simula lo que habría transcrito el STT). `medio` = «video» (voz + avatar animado)
+    o «audio» (solo voz sobre el bucle de reposo, mucho más rápido)."""
     _purgar()
     wav = await audio.read() if audio else None
     texto = texto.strip()[:2000]
     if not texto and (not wav or len(wav) < 8000):
         raise HTTPException(400, "Falta el audio o el texto")
-    turno = Turno(id=uuid.uuid4().hex[:12], sesion=sesion[:64])
+    video = VIDEO_POR_DEFECTO if medio not in ("video", "audio") else medio == "video"
+    turno = Turno(id=uuid.uuid4().hex[:12], sesion=sesion[:64], video=video)
     TURNOS[turno.id] = turno
     asyncio.create_task(procesar(turno, wav, texto or None))
     return {"id": turno.id}
@@ -488,4 +563,13 @@ async def video(archivo: str) -> FileResponse:
     return FileResponse(ruta, media_type="video/mp4")
 
 
+@app.api_route("/audios/{archivo}", methods=["GET", "HEAD"])
+async def audio_clip(archivo: str) -> FileResponse:
+    ruta = DIR_AUDIOS / Path(archivo).name
+    if ruta.suffix != ".wav" or not ruta.is_file():
+        raise HTTPException(404, "No existe ese audio")
+    return FileResponse(ruta, media_type="audio/wav")
+
+
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="web")
+

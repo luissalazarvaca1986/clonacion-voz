@@ -16,7 +16,7 @@ RUN git clone https://github.com/OpenTalker/SadTalker.git /opt/sadtalker \
     && rm -rf /opt/sadtalker/.git /opt/sadtalker/examples /opt/sadtalker/docs
 
 # El pip de la imagen base es demasiado viejo para el índice de PyTorch
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+RUN pip install --no-cache-dir --upgrade pip "setuptools<81" wheel \
     && pip install --no-cache-dir torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 \
         --index-url ${TORCH_INDEX} --extra-index-url https://pypi.org/simple
 

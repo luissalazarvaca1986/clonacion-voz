@@ -29,6 +29,20 @@
   .clip { opacity: 0; transition: opacity .18s linear; }
   .clip.visible { opacity: 1; }
 
+  /* Solo audio: sin avatar; fondo de color y un círculo con la inicial que late al hablar */
+  .inicial { position: absolute; inset: 0; display: none; place-items: center;
+    background: radial-gradient(circle at 50% 45%, #24346b 0%, #131c3d 55%, #0a0f22 100%); }
+  .inicial span { width: min(34%, 46vh); aspect-ratio: 1; border-radius: 50%; display: grid;
+    place-items: center; background: linear-gradient(145deg, #8fb0ff, #5a7de0); color: #fff;
+    font-size: clamp(48px, 14vh, 160px); font-weight: 600; letter-spacing: -.02em;
+    box-shadow: 0 0 0 0 rgba(122,162,255,.5), 0 20px 60px rgba(0,0,0,.45); user-select: none; }
+  body.solo-audio .inicial { display: grid; }
+  body.solo-audio .escenario > img, body.solo-audio #reposo { visibility: hidden; }
+  body.solo-audio.hablando .inicial span { animation: habla 1.2s ease-in-out infinite; }
+  body.solo-audio.pensando .inicial span { animation: piensa 1.6s ease-in-out infinite; }
+  @keyframes habla { 50% { transform: scale(1.06); box-shadow: 0 0 0 28px rgba(122,162,255,0), 0 20px 60px rgba(0,0,0,.45); } }
+  @keyframes piensa { 50% { opacity: .7; } }
+
   .escenario::after { content: ""; position: absolute; inset: 0; border-radius: inherit;
     pointer-events: none; box-shadow: inset 0 0 0 3px transparent; transition: box-shadow .3s; }
   body.oyendo .escenario::after { box-shadow: inset 0 0 0 4px var(--escucha); }
@@ -63,6 +77,14 @@
   body.completa .barra { transition: opacity .4s; }
   body.completa.quieto .barra:not(:focus-within) { opacity: 0; pointer-events: none; }
   body.completa.quieto { cursor: none; }
+  .modo { flex: none; display: flex; border: 1px solid rgba(255,255,255,.15); border-radius: 999px;
+    overflow: hidden; background: rgba(255,255,255,.06); }
+  .modo button { font: inherit; font-size: 14px; padding: 0 14px; height: 46px; border: 0;
+    background: transparent; color: var(--tenue); cursor: pointer; white-space: nowrap; }
+  .modo button[aria-pressed="true"] { background: var(--piensa); color: #fff; }
+  .inicio .modo { display: inline-flex; margin-top: 16px; }
+  .inicio .modo button { font-size: 14px; padding: 0 16px; border-radius: 0; }
+  @media (max-width: 560px) { .barra .modo button { padding: 0 10px; font-size: 13px; } }
   .boton { flex: none; width: 48px; height: 48px; border-radius: 50%; border: 1px solid rgba(255,255,255,.15);
     background: rgba(255,255,255,.06); color: var(--texto); display: grid; place-items: center; cursor: pointer; }
   .boton svg { width: 20px; height: 20px; }
@@ -71,6 +93,8 @@
     background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.15); border-radius: 999px;
     padding: 12px 18px; outline: none; }
   .escribir input:focus { border-color: var(--piensa); }
+  .escribir .enviar { margin-left: 8px; font: inherit; font-size: 15px; padding: 0 18px; border-radius: 999px;
+    border: 1px solid rgba(255,255,255,.18); background: var(--piensa); color: #fff; cursor: pointer; }
   .inicio .secundario { background: transparent; color: var(--texto); border: 1px solid rgba(255,255,255,.3);
     margin-left: 8px; }
   [hidden] { display: none !important; }
@@ -83,6 +107,7 @@
     <video id="reposo" muted loop playsinline></video>
     <video class="clip" id="clipA" playsinline preload="auto"></video>
     <video class="clip" id="clipB" playsinline preload="auto"></video>
+    <div class="inicial" aria-hidden="true"><span>L</span></div>
   </div>
 </main>
 
@@ -94,8 +119,13 @@
     </svg>
   </button>
   <form class="escribir" id="escribir" hidden autocomplete="off">
-    <input id="pregunta" placeholder="Escribe lo que le dirías a Luisa y pulsa Intro" aria-label="Pregunta">
+    <input id="pregunta" placeholder="Escribe lo que le dirías a Luisa y pulsa Intro" aria-label="Pregunta" enterkeyhint="send">
+    <button type="submit" id="enviarTexto" class="enviar">Enviar</button>
   </form>
+  <div class="modo" role="group" aria-label="Qué genera Luisa" data-modo>
+    <button type="button" data-medio="video" title="Voz y avatar animado (más lento)">Vídeo</button>
+    <button type="button" data-medio="audio" title="Solo voz sobre el reposo (mucho más rápido)">Solo audio</button>
+  </div>
   <div class="estado" id="estado" aria-live="polite"></div>
   <button class="boton" id="completa" title="Pantalla completa (F)" hidden>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -107,6 +137,10 @@
 <div class="inicio" id="inicio">
   <div style="text-align:center">
     <button id="empezar">Hablar con Luisa</button><button id="sinMic" class="secundario">Escribir (sin micrófono)</button>
+    <div><div class="modo" role="group" aria-label="Qué genera Luisa" data-modo>
+      <button type="button" data-medio="video">Vídeo animado</button>
+      <button type="button" data-medio="audio">Solo audio (rápido)</button>
+    </div></div>
     <p>Se pedirá permiso para usar el micrófono. Habla con normalidad: Luisa te escucha
        todo el tiempo, también mientras responde.</p>
   </div>
@@ -124,6 +158,23 @@ const sesion = (() => {
   } catch { return crypto.randomUUID(); }
 })();
 const escapar = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// ---- Vídeo animado o solo audio (se recuerda en este navegador) ---------------
+let medio = "video";
+try { if (localStorage.getItem("medio") === "audio") medio = "audio"; } catch {}
+function pintarMedio() {
+  marca("solo-audio", medio === "audio");
+  for (const b of document.querySelectorAll("[data-modo] button"))
+    b.setAttribute("aria-pressed", String(b.dataset.medio === medio));
+}
+for (const b of document.querySelectorAll("[data-modo] button")) {
+  b.onclick = () => {
+    medio = b.dataset.medio;
+    try { localStorage.setItem("medio", medio); } catch {}
+    pintarMedio();
+  };
+}
+pintarMedio();
+
 function mensaje(html = "", error = false) { estadoEl.innerHTML = html; estadoEl.classList.toggle("error", error); }
 function marca(clase, activa) { document.body.classList.toggle(clase, activa); }
 
@@ -152,7 +203,7 @@ function nuevoTurnoEnPantalla(id) {
 }
 function detenerClips() {
   for (const v of reproductores) { v.pause(); v.classList.remove("visible"); v.removeAttribute("src"); v.load(); }
-  actual = null; hablando = false;
+  actual = null; hablando = false; marca("hablando", false);
 }
 function precargar() {
   // Deja el siguiente clip cargado en el reproductor libre para un cambio instantáneo
@@ -164,12 +215,12 @@ function avanzar() {
   if (actual) return;                 // ya hay uno sonando; avanzará al terminar
   const url = clips.get(siguiente);
   if (!url) {                         // aún no está listo: Luisa sigue en reposo
-    if (totalClips !== null && siguiente > totalClips) { hablando = false; volverAEscuchar(); }
+    if (totalClips !== null && siguiente > totalClips) { hablando = false; marca("hablando", false); volverAEscuchar(); }
     return;
   }
   const v = reproductores.find((x) => x.dataset.url === url) || reproductores[0];
   if (v.dataset.url !== url) { v.dataset.url = url; v.src = url; }
-  actual = v; hablando = true;
+  actual = v; hablando = true; marca("hablando", true);
   marca("pensando", false);
   mensaje("");
   v.onended = v.onerror = () => {
@@ -179,8 +230,9 @@ function avanzar() {
     setTimeout(() => { if (anterior !== actual) anterior.classList.remove("visible"); }, 200);
     precargar();
   };
+  const soloAudio = url.startsWith("/audios/");
   v.play().then(() => {
-    v.classList.add("visible");
+    if (!soloAudio) v.classList.add("visible");   // el audio suena sobre el reposo
     for (const otro of reproductores) if (otro !== v && otro !== actual) setTimeout(() => otro.classList.remove("visible"), 200);
     precargar();
   }).catch(() => v.onended());
@@ -282,6 +334,7 @@ function enviarTexto(texto) {
 
 async function abrirTurno(datos) {
   datos.append("sesion", sesion);
+  datos.append("medio", medio);
   let id;
   try {
     const r = await fetch("/api/turno", { method: "POST", body: datos });
@@ -301,6 +354,11 @@ async function abrirTurno(datos) {
         pregunta = ev.texto;
         marca("pensando", true);
         mensaje(`<b>«${escapar(pregunta)}»</b>`);
+        break;
+      case "relleno":   // «Déjame pensarlo…»: suena ya y la respuesta entra detrás
+        if (!esActual() || actual || clips.size) break;
+        clips.set(0, ev.url); siguiente = 0;
+        avanzar();
         break;
       case "clip":
         if (!esActual()) break;
@@ -383,13 +441,16 @@ $("sinMic").onclick = () => {
   $("escribir").hidden = false;
   $("pregunta").focus();
 };
-$("escribir").onsubmit = (e) => {
-  e.preventDefault();
+function mandarPregunta() {
   const texto = $("pregunta").value.trim();
   if (!texto) return;
   $("pregunta").value = "";
   enviarTexto(texto);
-};
+}
+$("escribir").onsubmit = (e) => { e.preventDefault(); mandarPregunta(); };
+$("pregunta").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); mandarPregunta(); }
+});
 
 $("mic").onclick = () => {
   silenciado = !silenciado;
