@@ -3,8 +3,7 @@
 modelo/*.gguf
 modelo/*.parte
 
-# ---- Datos y caché (volúmenes de Docker) -----------------------------------
-audios/
+# ---- Configuración y caché (volúmenes de Docker) ---------------------------
 config/
 cache/
 
@@ -30,8 +29,7 @@ desktop.ini
 # ---- Modelos del LLM (Qwen3.5 2B, ~1,3 GB) ----------------------------------
 modelos-llm/
 
-# ---- Avatares y Meet-Videos (volúmenes) --------------------------------------
-avatares/
+# ---- Meet-Videos (volumen) --------------------------------------------------
 videos/
 
 # ---- Pesos de SadTalker (~1,3 GB) ---------------------------------------------
