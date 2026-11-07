@@ -1,0 +1,25 @@
+# Dependencias de SadTalker (commit cd4c046) fijadas para Python 3.8 + torch 1.12.1.
+# Copia de su requirements.txt sin gradio (no se usa su interfaz web).
+numpy==1.23.4
+face_alignment==1.3.5
+imageio==2.19.3
+imageio-ffmpeg==0.4.7
+librosa==0.9.2
+numba==0.58.1
+resampy==0.3.1
+pydub==0.25.1
+scipy==1.10.1
+kornia==0.6.8
+tqdm
+yacs==0.1.8
+pyyaml
+joblib==1.1.0
+scikit-image==0.19.3
+# lmdb (dependencia de basicsr) en versión con wheel para 3.8: la última solo trae código fuente
+lmdb==1.4.1
+basicsr==1.4.2
+facexlib==0.3.0
+# gfpgan solo se importa (el realce facial no se usa: no cabe en 4 GB junto al render)
+gfpgan==1.3.8
+av
+safetensors

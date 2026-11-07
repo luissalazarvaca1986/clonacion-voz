@@ -1,0 +1,147 @@
+services:
+  clonar-voz-backend:
+    # API FastAPI + llama-tts (CUDA). Swagger en /api/docs
+    build: ./backend
+    image: clonar-voz-backend:cuda
+    container_name: clonar-voz-backend
+    user: "1000:1000"
+    ports:
+      - "8093:8080"
+    volumes:
+      - ./modelo:/app/modelo     # .gguf (se descargan desde la web la primera vez)
+      - ./audios:/app/audios     # referencias/ (voces a clonar) y generados/ (síntesis)
+      - ./avatares:/app/avatares # una carpeta por avatar: avatares/Luis/ (imagen + 3 fondos)
+      - ./videos:/app/videos     # Meet-Videos generados (MP4)
+      - ./config:/app/config     # config.json con los ajustes guardados
+      - ./cache/cuda:/app/cache/cuda  # kernels CUDA ya compilados (sin él, 1.ª síntesis ~70 s)
+      - ./modelos-llm:/app/modelos-llm:ro   # Qwen3.5 2B para el análisis emocional
+      - ./cache/animacion:/app/animacion    # área de trabajo compartida con el animador
+    environment:
+      - CLONAR_DIR_MODELO=/app/modelo
+      - CLONAR_DIR_VOCES=/app/audios/referencias
+      - CLONAR_DIR_SALIDAS=/app/audios/generados
+      - CLONAR_CONFIG=/app/config/config.json
+      - CLONAR_DIR_AVATARES=/app/avatares
+      - CLONAR_DIR_VIDEOS=/app/videos
+      # LLM bajo demanda: el backend lo carga solo mientras etiqueta emociones
+      - CLONAR_LLM_MODELO=/app/modelos-llm/Qwen3.5-2B-Q4_K_M.gguf
+      - CLONAR_LLM_HILOS=6
+      - CLONAR_ANIMADOR_URL=http://clonar-voz-animador:8080
+      - CLONAR_MONGO_URL=mongodb://clonar-voz-mongo:27017
+      - CLONAR_DIR_ANIMACION=/app/animacion
+      # La GTX 1650 (sm_75) compila los kernels de llama.cpp al vuelo la primera vez
+      - CUDA_CACHE_PATH=/app/cache/cuda
+      - CUDA_CACHE_MAXSIZE=1073741824
+      # GTX 1650 (Turing, CC 7.5, 4 GB): usar Q4_K_M + mmproj Q8_0; bf16 no cabe en VRAM
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      clonar-voz-mongo:
+        condition: service_healthy
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.10
+    restart: unless-stopped
+
+  clonar-voz-mongo:
+    # Proyectos (cada generación del historial) con la configuración de sus segmentos
+    # 8.2: las versiones «8» y «latest» locales no arrancan en kernels Linux ≥ 6.19
+    # (SERVER-121912); esta sí, y el host usa el 7.0
+    image: mongo:8.2
+    container_name: clonar-voz-mongo
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:27018:27017"   # solo local: para inspeccionar con Compass/mongosh
+    volumes:
+      - ./datos/mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.15
+    restart: unless-stopped
+
+  clonar-voz-animador:
+    # Animación facial del avatar (SadTalker) en un entorno aislado: Python 3.8 +
+    # torch 1.12.1/CUDA 11.3. Sin modelos en memoria mientras está en reposo: cada
+    # animación es un proceso que carga los pesos y los libera al terminar.
+    build: ./animador
+    image: clonar-voz-animador:sadtalker
+    container_name: clonar-voz-animador
+    user: "1000:1000"
+    volumes:
+      - ./modelos-animacion:/modelos:ro   # pesos de SadTalker (fuera del repo y de la imagen)
+      - ./cache/animacion:/trabajo         # área de trabajo compartida con el backend
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/salud', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.14
+    restart: unless-stopped
+
+  clonar-voz-front-build:
+    # Compila el front de React (Vite) en ./html y termina. Para recompilar:
+    #   docker compose run --rm clonar-voz-front-build
+    image: node:22-alpine
+    container_name: clonar-voz-front-build
+    user: "1000:1000"
+    working_dir: /front
+    command: sh -c "npm install --no-audit --no-fund && npm run build -- --outDir /html --emptyOutDir"
+    volumes:
+      - ./front:/front
+      - ./html:/html
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.12
+    restart: "no"
+
+  clonar-voz-front:
+    # nginx sirve el compilado de ./html y reenvía /api al backend
+    image: nginx:1.27-alpine
+    container_name: clonar-voz-front
+    ports:
+      - "8094:80"
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      clonar-voz-backend:
+        condition: service_healthy
+      clonar-voz-front-build:
+        condition: service_completed_successfully
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.11
+    restart: unless-stopped
+
+networks:
+  clonar-voz-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.93.0/24
+          gateway: 192.168.93.1
