@@ -1,7 +1,10 @@
 services:
   clonar-voz-backend:
     # API FastAPI + llama-tts (CUDA). Swagger en /api/docs
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        CUDA_ARCHITECTURES: "121"   # GB10 (DGX Spark, Blackwell)
     image: clonar-voz-backend:cuda
     container_name: clonar-voz-backend
     user: "1000:1000"
@@ -29,10 +32,13 @@ services:
       - CLONAR_ANIMADOR_URL=http://clonar-voz-animador:8080
       - CLONAR_MONGO_URL=mongodb://clonar-voz-mongo:27017
       - CLONAR_DIR_ANIMACION=/app/animacion
-      # La GTX 1650 (sm_75) compila los kernels de llama.cpp al vuelo la primera vez
+      # LLM siempre cargado en la GPU (clonar-voz-llm), compartido con la conversación
+      - CLONAR_LLM_URL=http://clonar-voz-llm:8080
+      # Tareas de síntesis/animación simultáneas: pipeline de clips en paralelo
+      - CLONAR_GPU_CONCURRENCIA=3
+      # Caché de kernels CUDA compilados (acelera el primer arranque)
       - CUDA_CACHE_PATH=/app/cache/cuda
       - CUDA_CACHE_MAXSIZE=1073741824
-      # GTX 1650 (Turing, CC 7.5, 4 GB): usar Q4_K_M + mmproj Q8_0; bf16 no cabe en VRAM
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:
@@ -76,7 +82,8 @@ services:
     # Animación facial del avatar (SadTalker) en un entorno aislado: Python 3.8 +
     # torch 1.12.1/CUDA 11.3. Sin modelos en memoria mientras está en reposo: cada
     # animación es un proceso que carga los pesos y los libera al terminar.
-    build: ./animador
+    build:
+      context: ./animador
     image: clonar-voz-animador:sadtalker
     container_name: clonar-voz-animador
     user: "1000:1000"
@@ -84,6 +91,7 @@ services:
       - ./modelos-animacion:/modelos:ro   # pesos de SadTalker (fuera del repo y de la imagen)
       - ./cache/animacion:/trabajo         # área de trabajo compartida con el backend
     environment:
+      - ANIMADOR_CONCURRENCIA=3
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:
@@ -136,6 +144,105 @@ services:
     networks:
       clonar-voz-net:
         ipv4_address: 192.168.93.11
+    restart: unless-stopped
+
+  # ---- Conversación por voz con el avatar (puerto 9090) --------------------------
+  # STT y LLM quedan cargados en la GPU todo el tiempo.
+
+  clonar-voz-stt:
+    # Speech-to-text en español: whisper.cpp con CUDA
+    build:
+      context: ./stt
+      args:
+        CUDA_ARCHITECTURES: "121"
+    image: clonar-voz-stt:cuda
+    container_name: clonar-voz-stt
+    user: "1000:1000"
+    volumes:
+      - ./modelos-stt:/modelos:ro
+    command: ["whisper-server", "-m", "/modelos/${STT_MODELO:-ggml-large-v3-turbo.bin}",
+              "-l", "es", "--host", "0.0.0.0", "--port", "8080", "-t", "8"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.16
+    restart: unless-stopped
+
+  clonar-voz-llm:
+    # llama-server siempre cargado en la GPU: redacta las respuestas de la conversación
+    # y segmenta por emociones para el backend. Usa la imagen del backend (mismo llama.cpp).
+    image: clonar-voz-backend:cuda
+    pull_policy: never
+    container_name: clonar-voz-llm
+    user: "1000:1000"
+    volumes:
+      - ./modelos-llm:/modelos:ro
+    command: ["/opt/llama.cpp/llama-server", "-m", "/modelos/${LLM_MODELO:-Qwen3.5-2B-Q4_K_M.gguf}",
+              "--host", "0.0.0.0", "--port", "8080", "-ngl", "999", "-fa", "on",
+              "-c", "${LLM_CONTEXTO:-32768}", "-np", "${LLM_PARALELO:-4}", "--jinja",
+              "--alias", "qwen3.5-2b"]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.17
+    restart: unless-stopped
+
+  clonar-voz-conversa:
+    # Web del asistente por voz (solo el avatar) y orquestación del pipeline
+    #   micrófono → STT → RAG (SecondBrain) → LLM → clips de voz + vídeo en paralelo
+    build: ./conversa
+    image: clonar-voz-conversa:latest
+    container_name: clonar-voz-conversa
+    user: "1000:1000"
+    ports:
+      - "9090:8080"
+    volumes:
+      - ./videos:/videos:ro                # MP4 que genera el backend
+      - ./datos/conversa:/datos            # registro del bucle de reposo
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Ollama y ChromaDB de SecondBrain
+    environment:
+      - CONVERSA_AVATAR=Luisa
+      - CONVERSA_VOZ=447d4a974c1b          # Berenix
+      - CONVERSA_ESCENA=noche
+      - CONVERSA_MAX_PALABRAS=260          # ≈ 2 minutos de voz
+      - CONVERSA_CLIPS_EN_PARALELO=3
+      - CONVERSA_OLLAMA_URL=http://host.docker.internal:11434
+      - CONVERSA_CHROMA_URL=http://host.docker.internal:8100
+    depends_on:
+      clonar-voz-backend:
+        condition: service_healthy
+      clonar-voz-llm:
+        condition: service_healthy
+      clonar-voz-stt:
+        condition: service_started
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.18
     restart: unless-stopped
 
 networks:

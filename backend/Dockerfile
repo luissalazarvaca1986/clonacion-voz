@@ -4,19 +4,41 @@
 #   docker build -t clonar-voz-backend:cuda .                    # imagen de servicio
 #   docker build --target pruebas -t clonar-voz-backend:pruebas . && \
 #     docker run --rm clonar-voz-backend:pruebas                 # tests
-FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04 AS base
+# llama.cpp se compila desde el código fuente: no hay binarios oficiales con CUDA
+# para ARM64 (DGX Spark / GB10).
+# CUDA_ARCHITECTURES: 121 = GB10 (DGX Spark, Blackwell).
+ARG CUDA_VERSION=13.0.1
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS llama
 
 ARG LLAMA_BUILD=b11529
+ARG CUDA_ARCHITECTURES=121
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
+        git cmake build-essential ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch ${LLAMA_BUILD} https://github.com/ggml-org/llama.cpp.git /src \
+    && cmake -S /src -B /src/build \
+         -DCMAKE_BUILD_TYPE=Release \
+         -DGGML_CUDA=ON \
+         -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
+         -DGGML_NATIVE=OFF \
+         -DBUILD_SHARED_LIBS=OFF \
+         -DLLAMA_CURL=OFF \
+         -DLLAMA_BUILD_TESTS=OFF \
+         -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,/usr/local/cuda/lib64/stubs -L/usr/local/cuda/lib64/stubs" \
+    && cmake --build /src/build --config Release -j"$(nproc)" --target llama-tts llama-server \
+    && mkdir -p /opt/llama.cpp \
+    && cp /src/build/bin/llama-tts /src/build/bin/llama-server /opt/llama.cpp/
+
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu24.04 AS base
+
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
         python3 python3-venv ffmpeg curl ca-certificates libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# llama.cpp precompilado con CUDA 12.8 (incluye llama-tts con soporte Qwen3-TTS)
-RUN mkdir -p /opt/llama.cpp \
-    && curl -fsSL "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_BUILD}/llama-${LLAMA_BUILD}-bin-ubuntu-cuda-12.8-x64.tar.gz" \
-       | tar xz --strip-components=1 -C /opt/llama.cpp \
-    && ln -s /opt/llama.cpp/llama-tts /usr/local/bin/llama-tts
+COPY --from=llama /opt/llama.cpp /opt/llama.cpp
+RUN ln -s /opt/llama.cpp/llama-tts /usr/local/bin/llama-tts
 
 WORKDIR /app
 COPY requirements.txt .

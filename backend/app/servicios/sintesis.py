@@ -17,6 +17,7 @@ reenvía al navegador por SSE:
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import shutil
 import subprocess
@@ -227,9 +228,11 @@ class GestorTareas:
         self._vida = vida_segundos
         self._tareas: dict[str, Tarea] = {}
         self._cerrojo_tareas = threading.Lock()
-        # Solo una síntesis a la vez: dos procesos llama-tts simultáneos duplican el
-        # consumo de VRAM y agotan las gráficas pequeñas.
-        self._cerrojo_sintesis = threading.Lock()
+        # Por defecto, una síntesis a la vez: dos procesos llama-tts simultáneos duplican
+        # el consumo de VRAM y agotan las gráficas pequeñas. En equipos con memoria de
+        # sobra CLONAR_GPU_CONCURRENCIA permite varias tareas en paralelo (pipeline).
+        self._cerrojo_sintesis = threading.BoundedSemaphore(
+            max(1, int(os.environ.get("CLONAR_GPU_CONCURRENCIA") or 1)))
 
     @staticmethod
     def nuevo_id() -> str:

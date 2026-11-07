@@ -37,3 +37,9 @@ modelos-animacion/
 
 # ---- Base de datos (MongoDB) -------------------------------------------------
 datos/
+
+# ---- Ajustes locales de la máquina -----------------------------------------
+.env
+
+# ---- Modelo de speech-to-text (Whisper) --------------------------------------
+modelos-stt/
