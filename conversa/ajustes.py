@@ -28,8 +28,24 @@ DIR_STT = Path(os.getenv("CONVERSA_DIR_STT", "/modelos-stt"))
 DIR_STT_REMOTO = os.getenv("CONVERSA_DIR_STT_REMOTO", "/modelos")
 STT_INICIAL = os.getenv("CONVERSA_STT_MODELO", "")      # el que carga whisper-server al arrancar
 BD = Path(os.getenv("CONVERSA_BD", "/datos/conversa.sqlite3"))
+# Carpeta de avatares (solo lectura): cada avatar utilizable tiene su rostro.json
+DIR_AVATARES = Path(os.getenv("CONVERSA_DIR_AVATARES", "/avatares"))
+# Motor de animación ligero (en el navegador, sin IA de vídeo): siempre disponible
+SIMULACION = {"id": "simulacion", "nombre": "Simulación de movimiento"}
 
 FUNCIONES = ("stt", "llm", "tts", "animacion")
+
+
+def rostro(id_avatar: str, posicion: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Los puntos de la cara del avatar (avatares/<id>/rostro.json), o None si no existen
+    o se calcularon para otra posición del avatar en la imagen."""
+    try:
+        datos = json.loads((DIR_AVATARES / id_avatar / "rostro.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if posicion is not None and datos.get("posicion") not in (None, posicion):
+        return None
+    return datos
 # Fondo preferido la primera vez (si el avatar lo tiene)
 ESCENA_INICIAL = os.getenv("CONVERSA_ESCENA", "noche")
 _cerrojo = threading.Lock()
@@ -77,6 +93,17 @@ async def _json(cliente: httpx.AsyncClient, url: str) -> Any:
         return None
 
 
+def _motivo(avatar: dict[str, Any], voces: set[str]) -> str:
+    """Por qué un avatar no se puede usar en este equipo («» si se puede)."""
+    if not avatar.get("completo", True):
+        return "avatar incompleto"
+    if avatar.get("voz") not in voces:
+        return "sin voz en este equipo"
+    if rostro(avatar["id"], avatar.get("posicion")) is None:
+        return "sin puntos del rostro"
+    return ""
+
+
 async def opciones() -> dict[str, Any]:
     async with httpx.AsyncClient() as cliente:
         avatares = await _json(cliente, f"{BACKEND_URL}/api/avatares") or []
@@ -98,21 +125,21 @@ async def opciones() -> dict[str, Any]:
     llm = sorted(llm, key=lambda m: (m.get("status") or {}).get("value") != "loaded")
 
     return {
-        # Utilizables: completos y con su voz en este equipo (van primero)
+        # Utilizables: completos, con su voz en este equipo y con los puntos de su cara
         "avatares": [{"id": a["id"], "nombre": a.get("nombre") or a["id"], "voz": a.get("voz"),
                       "escenas": a.get("escenas") or [], "imagen": f"/avatar.png?avatar={a['id']}"}
-                     for a in avatares if a.get("voz") in voces and a.get("completo", True)],
+                     for a in avatares if not _motivo(a, voces)],
         # Los demás se muestran deshabilitados, con el motivo
         "no_disponibles": [{"id": a["id"], "nombre": a.get("nombre") or a["id"],
-                            "motivo": "sin voz en este equipo" if a.get("voz") not in voces
-                            else "avatar incompleto"}
-                           for a in avatares if a.get("voz") not in voces or not a.get("completo", True)],
+                            "motivo": _motivo(a, voces)}
+                           for a in avatares if _motivo(a, voces)],
         "modelos": {
             "stt": [{"id": m, "nombre": _nombre(m)} for m in stt],
             "llm": [{"id": m["id"], "nombre": _nombre(m["id"])} for m in llm],
             "tts": [{"id": m["id"], "nombre": _nombre(m["id"])} for m in tts],
-            "animacion": [{"id": m["id"], "nombre": m.get("nombre") or m["id"]}
-                          for m in motores if m.get("disponible")],
+            # La simulación va primero: es la opción ligera (sin IA de vídeo)
+            "animacion": [SIMULACION] + [{"id": m["id"], "nombre": m.get("nombre") or m["id"]}
+                                         for m in motores if m.get("disponible")],
         },
     }
 
@@ -129,8 +156,39 @@ def por_defecto(ops: dict[str, Any]) -> dict[str, Any]:
         "microfono": True,
         "modelos": {f: primero(ops["modelos"][f]) for f in FUNCIONES},
         "salida": {"id": "default", "nombre": "Predeterminado del sistema"},
-        "reduccion_ruido": False,
+        "reduccion_ruido": {"activo": False, "calibracion": None},
     }
+
+
+def _numero(valor: Any, minimo: float, maximo: float) -> float:
+    v = float(valor)
+    if not minimo <= v <= maximo:
+        raise ValueError
+    return round(v, 2)
+
+
+def _reduccion_ruido(valor: Any) -> dict[str, Any]:
+    """{activo, calibracion}. La calibración la calcula la web (10 s de ruido + 10 s de
+    voz): niveles en dBFS, umbral de voz intencional y el perfil espectral del ruido."""
+    if not isinstance(valor, dict):          # configuraciones antiguas: true/false
+        return {"activo": False, "calibracion": None}
+    cal = valor.get("calibracion")
+    calibracion = None
+    if isinstance(cal, dict):
+        try:
+            perfil = [round(float(x), 6) for x in (cal.get("perfil") or [])][:1025]
+            calibracion = {
+                "ruido_db": _numero(cal["ruido_db"], -140, 0),
+                "voz_db": _numero(cal["voz_db"], -140, 0),
+                "umbral_db": _numero(cal["umbral_db"], -140, 0),
+                "margen_db": _numero(cal["margen_db"], -140, 140),
+                "perfil": perfil,
+                "fecha": str(cal.get("fecha") or "")[:40],
+            }
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("La calibración de la reducción de ruido no es válida.")
+    activo = bool(valor.get("activo")) and calibracion is not None
+    return {"activo": activo, "calibracion": calibracion}
 
 
 def validar(datos: dict[str, Any], ops: dict[str, Any]) -> dict[str, Any]:
@@ -157,5 +215,5 @@ def validar(datos: dict[str, Any], ops: dict[str, Any]) -> dict[str, Any]:
         "modelos": modelos,
         "salida": {"id": str(salida.get("id") or "default")[:200],
                    "nombre": str(salida.get("nombre") or "")[:200]},
-        "reduccion_ruido": bool(datos.get("reduccion_ruido")),
+        "reduccion_ruido": _reduccion_ruido(datos.get("reduccion_ruido")),
     }

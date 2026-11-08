@@ -212,6 +212,7 @@ services:
       - ./datos/conversa:/datos            # registro del bucle de reposo
       - ./conversa/demo:/conocimiento:ro   # respaldo si SecondBrain no está en marcha
       - ./modelos-stt:/modelos-stt:ro      # para ofrecer los modelos de Whisper en la web
+      - ./avatares:/avatares:ro            # rostro.json de cada avatar (simulación de movimiento)
     extra_hosts:
       - "host.docker.internal:host-gateway"   # Ollama y ChromaDB de SecondBrain
     environment:
