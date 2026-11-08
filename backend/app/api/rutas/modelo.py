@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -17,6 +18,15 @@ router = APIRouter(prefix="/api/modelo", tags=["Modelo"])
 @router.get("/catalogo", response_model=Catalogo, summary="Cuantizaciones disponibles")
 def catalogo(s: ServiciosDep) -> dict:
     return s.descarga.catalogo()
+
+
+@router.get("/disponibles", summary="Modelos TTS presentes en la carpeta del modelo")
+def disponibles(s: ServiciosDep) -> list[dict]:
+    """Cada .gguf del TTS con su mmproj emparejado. El `id` (nombre del archivo) se puede
+    enviar como `modelo_tts` en `/api/generar`. El primero es el que se usa por defecto."""
+    actual = s.entorno.rutas_efectivas(s.config.cargar()).modelo
+    return [{"id": p["id"], "mmproj": Path(p["mmproj"]).name, "actual": p["modelo"] == actual}
+            for p in s.entorno.listar_modelos_tts()]
 
 
 @router.post("/descargar", response_model=DescargaIniciada, summary="Descargar el modelo",

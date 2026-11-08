@@ -384,6 +384,35 @@ tema de la app.
 
 ---
 
+## 🗣️ Conversación por voz con el avatar
+
+Web en **http://localhost:9090** (`clonar-voz-conversa`). Primero aparece una pantalla de
+entrada (estilo «unirse a la reunión»): avatar, fondo (día, noche o lluvia, con el vídeo
+encendido), vídeo animado sí/no, micrófono o solo texto, **Configuración personalizada**
+(un modelo por función: STT, LLM, TTS y animación) y, en **Ajustes adicionales**, la salida
+de audio. Al pulsar **Entrar a la sala** se valida y se guarda en SQLite
+(`datos/conversa/conversa.sqlite3`): es la configuración por defecto la próxima vez; la
+primera vez se propone lo primero disponible.
+
+En la sala, el pie es fijo: interruptores de vídeo y micrófono, engranaje (modelos), campo
+de texto con botón de enviar y salir. Con el micrófono encendido, cada frase se transcribe
+en el campo y se envía tras una pausa (o con Intro). Cada turno: Whisper → conocimiento
+(SecondBrain; si no responde, los `.md` de `conversa/demo/`) → LLM en streaming → clips de
+voz (y vídeo animado) que se reproducen en orden sobre el bucle de reposo.
+
+| Servicio | IP | Qué hace |
+|---|---|---|
+| `clonar-voz-stt` | .16 | whisper.cpp en GPU, español (`modelos-stt/ggml-large-v3-turbo.bin`) |
+| `clonar-voz-llm` | .17 | llama-server en GPU, modo router: todos los `.gguf` de `modelos-llm/` |
+| `clonar-voz-conversa` | .18 | web + orquestador (`conversa/`), puerto 9090 |
+
+Las listas de modelos salen de lo que hay en el equipo (`modelos-stt/`, `modelos-llm/`,
+`modelo/`), así que el mismo código ofrece modelos grandes aquí y pequeños en el equipo de
+desarrollo (rama `main`, GTX 1650, todo en CPU). Variables opcionales del backend:
+`CLONAR_TTS_MODELO`, `CLONAR_TTS_MMPROJ`, `CLONAR_TTS_DISPOSITIVO`; del animador:
+`ANIMADOR_DISPOSITIVO`. `/api/generar` acepta `modelo_tts` y `/api/modelo/disponibles`
+lista los TTS con su mmproj.
+
 ## 🧱 Arquitectura
 
 ```

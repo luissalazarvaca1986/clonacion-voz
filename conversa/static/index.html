@@ -17,8 +17,10 @@
   html, body { height: 100%; background: var(--fondo); color: var(--texto);
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
 
-  main { height: 100%; display: grid; place-items: center; padding: 16px 16px 84px; }
-  .escenario { position: relative; width: min(100%, calc((100vh - 116px) * 16 / 9));
+  /* Sala: avatar (alto flexible, siempre 16:9) · línea de estado · pie fijo */
+  .sala { height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; }
+  main { min-height: 0; padding: 16px 16px 0; display: grid; place-items: center; container-type: size; }
+  .escenario { position: relative; width: min(100cqw, 100cqh * 16 / 9);
     aspect-ratio: 16 / 9; border-radius: 18px; overflow: hidden; background: #000;
     box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.06); }
   .escenario > img, .escenario > video { position: absolute; inset: 0; width: 100%; height: 100%;
@@ -49,10 +51,9 @@
   body.pensando .escenario::after { animation: latido 1.6s ease-in-out infinite; }
   @keyframes latido { 50% { box-shadow: inset 0 0 0 4px var(--piensa); } }
 
-  .barra { position: fixed; left: 0; right: 0; bottom: 18px; display: flex; justify-content: center;
-    align-items: center; gap: 12px; padding: 0 16px; min-height: 48px; }
-  .estado { font-size: 15px; color: var(--tenue); max-width: 70ch; line-height: 1.4;
-    text-wrap: balance; min-width: 0; }
+  .estado { font-size: 15px; color: var(--tenue); line-height: 1.4; text-align: center; text-wrap: balance;
+    min-height: calc(1.4em + 20px); padding: 10px 16px; max-width: 80ch; margin: 0 auto; width: 100%; }
+  .pie-sala { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 0 16px 18px; }
   .estado b { color: var(--texto); font-weight: 500; }
   .estado.error { color: var(--error); }
   .mic { position: relative; flex: none; width: 48px; height: 48px; border-radius: 50%;
@@ -64,87 +65,267 @@
   .mic[aria-pressed="true"] { color: var(--error); border-color: rgba(255,107,107,.5); }
   .mic[aria-pressed="true"] .nivel { display: none; }
 
-  .inicio { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(5,7,13,.72);
-    backdrop-filter: blur(6px); z-index: 5; padding: 16px; }
-  .inicio button { font: inherit; font-size: 18px; padding: 16px 28px; border-radius: 999px; border: 0;
-    background: var(--texto); color: var(--fondo); cursor: pointer; }
-  .inicio p { margin-top: 14px; color: var(--tenue); font-size: 14px; text-align: center; max-width: 46ch; }
-  /* Pantalla completa: el avatar ocupa toda la pantalla y la barra se oculta sola */
+  /* ---- Pantalla de entrada (antes de la sala) ---- */
+  .entrada { position: fixed; inset: 0; z-index: 5; overflow-y: auto; background:
+    radial-gradient(ellipse at 50% 0%, #1b2340 0%, #0b0f1c 60%, var(--fondo) 100%);
+    display: flex; flex-direction: column; align-items: center; padding: 40px 16px 32px; gap: 28px; }
+  .entrada .titulo { text-align: center; width: min(100%, 520px); }
+  .entrada .titulo small { display: block; color: var(--tenue); font-size: 14px; margin-bottom: 8px; }
+  .selector-avatar { position: relative; }
+  .selector-avatar select { width: 100%; appearance: none; font: inherit; font-size: clamp(22px, 4vw, 30px);
+    font-weight: 600; text-align: center; text-align-last: center; color: var(--texto);
+    background: rgba(255,255,255,.04); border: 0; border-bottom: 2px solid var(--tenue);
+    padding: 8px 40px; border-radius: 6px 6px 0 0; cursor: pointer; outline: none; }
+  .selector-avatar select:focus { border-bottom-color: var(--piensa); }
+  .selector-avatar::after { content: "▾"; position: absolute; right: 14px; top: 50%; translate: 0 -50%;
+    color: var(--tenue); pointer-events: none; font-size: 18px; }
+  .selector-avatar option, .campo select option { background: #151a2c; color: var(--texto); }
+
+  .tarjeta { width: min(100%, 640px); background: #151a2c; border-radius: 14px; overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06); }
+  .vista { position: relative; aspect-ratio: 16 / 9; background: #000; }
+  .vista img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: opacity .3s; }
+  .vista .sin-video { position: absolute; inset: 0; display: none; place-items: center;
+    background: radial-gradient(circle at 50% 45%, #24346b 0%, #131c3d 55%, #0a0f22 100%); }
+  .vista .sin-video span { width: 34%; aspect-ratio: 1; border-radius: 50%; display: grid; place-items: center;
+    background: linear-gradient(145deg, #8fb0ff, #5a7de0); color: #fff; font-size: clamp(40px, 9vw, 72px); font-weight: 600; }
+  .tarjeta.solo-audio .vista .sin-video { display: grid; }
+  .vista .nota { position: absolute; left: 12px; top: 10px; font-size: 13px; color: #fff;
+    background: rgba(0,0,0,.55); padding: 4px 10px; border-radius: 999px; }
+  .acciones { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 20px 16px 22px; }
+  .entrar { font: inherit; font-size: 16px; font-weight: 600; padding: 12px 34px; border-radius: 8px; border: 0;
+    background: var(--piensa); color: #0b0f1c; cursor: pointer; min-width: 200px; }
+  .entrar:hover { filter: brightness(1.08); }
+  .entrar:disabled { opacity: .55; cursor: progress; }
+  .fila-entrar { display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap; }
+  .escenas { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: rgba(255,255,255,.06);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+  .escenas button { width: 40px; height: 38px; display: grid; place-items: center; border: 0; border-radius: 8px;
+    background: transparent; color: var(--tenue); cursor: pointer; }
+  .escenas button svg { width: 20px; height: 20px; }
+  .escenas button:hover:not(:disabled) { color: var(--texto); background: rgba(255,255,255,.06); }
+  .escenas button[aria-checked="true"] { background: var(--piensa); color: #0b0f1c; }
+  .escenas button:disabled { opacity: .3; cursor: not-allowed; }
+  .escenas button:focus-visible { outline: 2px solid var(--piensa); outline-offset: 2px; }
+  .controles { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px 26px; }
+  .interruptor { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; color: var(--texto);
+    font-size: 14px; background: none; border: 0; font: inherit; padding: 4px; }
+  .interruptor svg { width: 20px; height: 20px; }
+  .interruptor .pista { width: 40px; height: 22px; border-radius: 999px; background: rgba(255,255,255,.18);
+    position: relative; transition: background .2s; flex: none; }
+  .interruptor .pista::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; transition: translate .2s; }
+  .interruptor[aria-checked="true"] .pista { background: var(--piensa); }
+  .interruptor[aria-checked="true"] .pista::after { translate: 18px 0; }
+  .interruptor[aria-checked="false"] svg { color: var(--tenue); }
+  .enlace { display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; font: inherit;
+    font-size: 14px; color: var(--texto); cursor: pointer; padding: 4px; }
+  .enlace svg { width: 18px; height: 18px; }
+  .enlace:hover, .interruptor:hover { color: #fff; }
+  .aviso { min-height: 20px; color: var(--tenue); font-size: 13px; text-align: center; max-width: 52ch; }
+  .aviso.error { color: var(--error); }
+
+  .adicionales { width: min(100%, 640px); text-align: center; }
+  .adicionales h2 { font-size: 14px; font-weight: 600; color: var(--texto); margin-bottom: 12px; }
+  .franja { display: grid; grid-template-columns: 1fr 1fr; background: #151a2c; border-radius: 10px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.06); }
+  .franja > * { padding: 14px 16px; display: flex; align-items: center; justify-content: center; gap: 10px;
+    font-size: 14px; min-width: 0; }
+  .franja > * + * { border-left: 1px solid rgba(255,255,255,.08); }
+  .franja svg { width: 18px; height: 18px; flex: none; color: var(--tenue); }
+  .franja select { min-width: 0; flex: 1; max-width: 240px; font: inherit; font-size: 14px; color: var(--texto);
+    background: transparent; border: 0; outline: none; cursor: pointer; text-overflow: ellipsis; }
+  .franja .pendiente { color: var(--tenue); cursor: not-allowed; }
+  .franja .pendiente em { font-style: normal; font-size: 11px; border: 1px solid rgba(255,255,255,.2);
+    border-radius: 999px; padding: 1px 8px; }
+  @media (max-width: 560px) { .franja { grid-template-columns: 1fr; }
+    .franja > * + * { border-left: 0; border-top: 1px solid rgba(255,255,255,.08); } }
+
+  /* ---- Configuración personalizada (modelos) ---- */
+  dialog.modelos { margin: auto; width: min(92vw, 420px); border: 0; border-radius: 14px; padding: 0; color: var(--texto);
+    background: #151a2c; box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.08); }
+  dialog.modelos::backdrop { background: rgba(5,7,13,.6); backdrop-filter: blur(3px); }
+  dialog.modelos form { padding: 20px; display: grid; gap: 14px; }
+  dialog.modelos h3 { font-size: 17px; font-weight: 600; }
+  dialog.modelos p { font-size: 13px; color: var(--tenue); margin-top: -6px; }
+  .campo { display: grid; gap: 6px; font-size: 13px; color: var(--tenue); }
+  .campo select { font: inherit; font-size: 14px; color: var(--texto); background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.15); border-radius: 8px; padding: 9px 10px; outline: none; }
+  .campo select:focus { border-color: var(--piensa); }
+  .campo select:disabled { opacity: .5; }
+  dialog.modelos .pie { display: flex; justify-content: flex-end; margin-top: 4px; }
+  dialog.modelos .pie button { font: inherit; font-size: 14px; font-weight: 600; padding: 9px 22px;
+    border-radius: 8px; border: 0; background: var(--piensa); color: #0b0f1c; cursor: pointer; }
+  /* Pantalla completa: el avatar ocupa toda la pantalla; estado y pie flotan encima y
+     se ocultan solos cuando el ratón está quieto */
   body.completa main { padding: 0; }
   body.completa .escenario { width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0;
     box-shadow: none; }
   body.completa .escenario > img, body.completa .escenario > video { object-fit: contain; }
-  body.completa .barra { transition: opacity .4s; }
-  body.completa.quieto .barra:not(:focus-within) { opacity: 0; pointer-events: none; }
+  body.completa .sala { grid-template-rows: 1fr; }
+  body.completa main { grid-row: 1; grid-column: 1; }
+  body.completa .estado, body.completa .pie-sala { position: fixed; left: 0; right: 0; z-index: 2;
+    transition: opacity .4s; }
+  body.completa .estado { bottom: 76px; text-shadow: 0 1px 4px #000; color: var(--texto); }
+  body.completa .pie-sala { bottom: 0; }
+  body.completa.quieto .pie-sala:not(:focus-within) { opacity: 0; pointer-events: none; }
   body.completa.quieto { cursor: none; }
-  .modo { flex: none; display: flex; border: 1px solid rgba(255,255,255,.15); border-radius: 999px;
-    overflow: hidden; background: rgba(255,255,255,.06); }
-  .modo button { font: inherit; font-size: 14px; padding: 0 14px; height: 46px; border: 0;
-    background: transparent; color: var(--tenue); cursor: pointer; white-space: nowrap; }
-  .modo button[aria-pressed="true"] { background: var(--piensa); color: #fff; }
-  .inicio .modo { display: inline-flex; margin-top: 16px; }
-  .inicio .modo button { font-size: 14px; padding: 0 16px; border-radius: 0; }
-  @media (max-width: 560px) { .barra .modo button { padding: 0 10px; font-size: 13px; } }
+  /* Pantalla completa: solo el icono, abajo a la izquierda del avatar, fondo al 10 % */
+  .completa-btn { position: absolute; left: 12px; bottom: 12px; z-index: 3; width: 40px; height: 40px;
+    display: grid; place-items: center; border: 0; border-radius: 8px; cursor: pointer;
+    background: rgba(0,0,0,.1); color: #fff; transition: background .2s; }
+  .completa-btn:hover { background: rgba(0,0,0,.35); }
+  .completa-btn svg { width: 22px; height: 22px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
+  body.completa.quieto .completa-btn { opacity: 0; }
   .boton { flex: none; width: 48px; height: 48px; border-radius: 50%; border: 1px solid rgba(255,255,255,.15);
     background: rgba(255,255,255,.06); color: var(--texto); display: grid; place-items: center; cursor: pointer; }
   .boton svg { width: 20px; height: 20px; }
-  .escribir { flex: 1; max-width: 560px; display: flex; }
+  .ajustes-sala { display: flex; align-items: center; gap: 4px; flex: none; }
+  .ajustes-sala .interruptor { padding: 6px; gap: 6px; }
+  .ajustes-sala .interruptor .pista { width: 34px; height: 20px; }
+  .ajustes-sala .interruptor .pista::after { width: 14px; height: 14px; }
+  .ajustes-sala .interruptor[aria-checked="true"] .pista::after { translate: 14px 0; }
+  .ajustes-sala .engranaje { background: transparent; border: 0; width: 40px; height: 40px; color: var(--tenue); }
+  .ajustes-sala .engranaje:hover { color: var(--texto); }
+  body.oyendo #salaMic svg { color: var(--escucha); }
+  .salir { color: var(--tenue); transition: color .2s, border-color .2s; }
+  .salir:hover, .salir:focus-visible { color: var(--error); border-color: rgba(255,107,107,.55); }
+  .escribir { flex: 1; max-width: 720px; display: flex; align-items: center; }
   .escribir input { flex: 1; min-width: 0; font: inherit; font-size: 15px; color: var(--texto);
     background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.15); border-radius: 999px;
     padding: 12px 18px; outline: none; }
   .escribir input:focus { border-color: var(--piensa); }
-  .escribir .enviar { margin-left: 8px; font: inherit; font-size: 15px; padding: 0 18px; border-radius: 999px;
-    border: 1px solid rgba(255,255,255,.18); background: var(--piensa); color: #fff; cursor: pointer; }
-  .inicio .secundario { background: transparent; color: var(--texto); border: 1px solid rgba(255,255,255,.3);
-    margin-left: 8px; }
+  body.oyendo .escribir input, body.transcribiendo .escribir input { border-color: var(--escucha); }
+  .escribir .enviar { margin-left: 8px; flex: none; width: 46px; height: 46px; border-radius: 50%; border: 0;
+    background: var(--piensa); color: #0b0f1c; display: grid; place-items: center; cursor: pointer; }
+  .escribir .enviar svg { width: 20px; height: 20px; translate: -1px 1px; }
+  .escribir .enviar:hover { filter: brightness(1.1); }
   [hidden] { display: none !important; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 </style>
 </head>
 <body>
+<div class="sala">
 <main>
   <div class="escenario">
-    <img src="/avatar.png" alt="Luisa">
+    <img id="fijo" alt="">
     <video id="reposo" muted loop playsinline></video>
     <video class="clip" id="clipA" playsinline preload="auto"></video>
     <video class="clip" id="clipB" playsinline preload="auto"></video>
-    <div class="inicial" aria-hidden="true"><span>L</span></div>
+    <div class="inicial" aria-hidden="true"><span id="inicial"></span></div>
+    <button class="completa-btn" id="completa" title="Pantalla completa (F)" aria-label="Pantalla completa" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path id="iconoCompleta" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>
+      </svg>
+    </button>
   </div>
 </main>
 
-<div class="barra">
-  <button class="mic" id="mic" aria-pressed="false" title="Silenciar micrófono" hidden>
-    <span class="nivel" id="nivel"></span>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-      <rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>
-    </svg>
-  </button>
-  <form class="escribir" id="escribir" hidden autocomplete="off">
-    <input id="pregunta" placeholder="Escribe lo que le dirías a Luisa y pulsa Intro" aria-label="Pregunta" enterkeyhint="send">
-    <button type="submit" id="enviarTexto" class="enviar">Enviar</button>
-  </form>
-  <div class="modo" role="group" aria-label="Qué genera Luisa" data-modo>
-    <button type="button" data-medio="video" title="Voz y avatar animado (más lento)">Vídeo</button>
-    <button type="button" data-medio="audio" title="Solo voz sobre el reposo (mucho más rápido)">Solo audio</button>
+<div class="estado" id="estado" aria-live="polite"></div>
+
+<footer class="pie-sala">
+  <div class="ajustes-sala" id="ajustesSala" hidden>
+    <button type="button" class="interruptor" id="salaVideo" role="switch" aria-checked="false" aria-label="Vídeo animado">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-4v12l-6-4"/></svg>
+      <span class="pista"></span>
+    </button>
+    <button type="button" class="interruptor" id="salaMic" role="switch" aria-checked="false" aria-label="Micrófono">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      <span class="pista"></span>
+    </button>
+    <button type="button" class="boton engranaje" id="salaModelos" title="Configuración avanzada (modelos)" aria-label="Configuración avanzada">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
   </div>
-  <div class="estado" id="estado" aria-live="polite"></div>
-  <button class="boton" id="completa" title="Pantalla completa (F)" hidden>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-      <path id="iconoCompleta" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>
+  <form class="escribir" id="escribir" hidden autocomplete="off">
+    <input id="pregunta" placeholder="Escribe tu pregunta y pulsa Intro" aria-label="Pregunta" enterkeyhint="send">
+    <button type="submit" id="enviarTexto" class="enviar" title="Enviar" aria-label="Enviar">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.6 10.4 20.3 3.1c.9-.4 1.8.5 1.4 1.4l-7.3 17.7c-.4 1-1.8.9-2.1-.1l-1.9-6.6-6.6-1.9c-1-.3-1.1-1.7-.2-2.1zm8.6 3.4 1.4 4.8 5.2-12.6-12.6 5.2 4.8 1.4 4.3-3.4z"/></svg>
+    </button>
+  </form>
+  <button class="boton salir" id="salir" title="Salir de la sala" aria-label="Salir de la sala" hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/>
     </svg>
   </button>
+</footer>
 </div>
 
-<div class="inicio" id="inicio">
-  <div style="text-align:center">
-    <button id="empezar">Hablar con Luisa</button><button id="sinMic" class="secundario">Escribir (sin micrófono)</button>
-    <div><div class="modo" role="group" aria-label="Qué genera Luisa" data-modo>
-      <button type="button" data-medio="video">Vídeo animado</button>
-      <button type="button" data-medio="audio">Solo audio (rápido)</button>
-    </div></div>
-    <p>Se pedirá permiso para usar el micrófono. Habla con normalidad: Luisa te escucha
-       todo el tiempo, también mientras responde.</p>
+<div class="entrada" id="entrada">
+  <div class="titulo">
+    <small>Elige la configuración para conversar con</small>
+    <div class="selector-avatar">
+      <select id="avatar" aria-label="Avatar con el que conversarás"><option>Cargando…</option></select>
+    </div>
   </div>
+
+  <section class="tarjeta" id="tarjeta">
+    <div class="vista">
+      <img id="vistaAvatar" alt="">
+      <div class="sin-video"><span id="vistaInicial"></span></div>
+      <span class="nota" id="vistaNota">Vídeo animado desactivado: solo voz</span>
+    </div>
+    <div class="acciones">
+      <div class="fila-entrar">
+        <button class="entrar" id="entrar" disabled>Entrar a la sala</button>
+        <div class="escenas" id="escenas" role="radiogroup" aria-label="Fondo del avatar" hidden>
+          <button type="button" role="radio" data-escena="dia" title="Día" aria-label="Día">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          </button>
+          <button type="button" role="radio" data-escena="noche" title="Noche" aria-label="Noche">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          </button>
+          <button type="button" role="radio" data-escena="lluvia" title="Lluvia" aria-label="Lluvia">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 15.5A4.5 4.5 0 0 0 17.5 7a6 6 0 0 0-11.6 1.6A4 4 0 0 0 6 16.5M8 19l-1 2M12 19l-1 2M16 19l-1 2M10 14l-1 2M14 14l-1 2"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="controles">
+        <button type="button" class="interruptor" id="usarVideo" role="switch" aria-checked="false"
+                title="Generar vídeo animado del avatar (más lento) o solo voz">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-4v12l-6-4"/></svg>
+          <span class="pista"></span><span class="sr">Vídeo</span>
+        </button>
+        <button type="button" class="interruptor" id="usarMic" role="switch" aria-checked="true"
+                title="Hablar por micrófono o escribir (solo texto)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          <span class="pista"></span><span class="sr">Micrófono</span>
+        </button>
+        <button type="button" class="enlace" id="abrirModelos">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          Configuración personalizada
+        </button>
+      </div>
+      <div class="aviso" id="aviso" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section class="adicionales">
+    <h2>Ajustes adicionales</h2>
+    <div class="franja">
+      <label title="Altavoces o auriculares por los que hablará el avatar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>
+        <select id="salida" aria-label="Dispositivo de salida de audio"><option value="default">Salida predeterminada</option></select>
+      </label>
+      <div class="pendiente" title="Pendiente de definir">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12h2M6 8v8M10 5v14M14 9v6M18 7v10M22 12h-2"/></svg>
+        Noise Reduction <em>pendiente</em>
+      </div>
+    </div>
+  </section>
 </div>
+
+<dialog class="modelos" id="modelos">
+  <form method="dialog">
+    <h3>Configuración personalizada</h3>
+    <p>Modelos que usará la sala en este equipo. Por defecto, el primero disponible de cada uno.</p>
+    <label class="campo">Voz a texto (STT)<select id="m-stt"></select></label>
+    <label class="campo">Modelo de lenguaje (LLM)<select id="m-llm"></select></label>
+    <label class="campo">Texto a voz (TTS)<select id="m-tts"></select></label>
+    <label class="campo">Animación del avatar<select id="m-animacion"></select></label>
+    <div class="pie"><button value="ok">Listo</button></div>
+  </form>
+</dialog>
 
 <script>
 "use strict";
@@ -158,37 +339,26 @@ const sesion = (() => {
   } catch { return crypto.randomUUID(); }
 })();
 const escapar = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-// ---- Vídeo animado o solo audio (se recuerda en este navegador) ---------------
-let medio = "video";
-try { if (localStorage.getItem("medio") === "audio") medio = "audio"; } catch {}
-function pintarMedio() {
-  marca("solo-audio", medio === "audio");
-  for (const b of document.querySelectorAll("[data-modo] button"))
-    b.setAttribute("aria-pressed", String(b.dataset.medio === medio));
-}
-for (const b of document.querySelectorAll("[data-modo] button")) {
-  b.onclick = () => {
-    medio = b.dataset.medio;
-    try { localStorage.setItem("medio", medio); } catch {}
-    pintarMedio();
-  };
-}
-pintarMedio();
+// ---- Vídeo animado o solo audio: lo fija la pantalla de entrada y no cambia en la sala
+let medio = "audio";
+function pintarMedio() { marca("solo-audio", medio === "audio"); }
 
 function mensaje(html = "", error = false) { estadoEl.innerHTML = html; estadoEl.classList.toggle("error", error); }
 function marca(clase, activa) { document.body.classList.toggle(clase, activa); }
 
 // ---- Bucle de reposo: Luisa nunca desaparece -------------------------------
 const reposo = $("reposo");
+let esperaReposo;
 async function cargarReposo() {
+  clearTimeout(esperaReposo);
+  reposo.classList.remove("listo");
   try {
-    const r = await fetch("/reposo.mp4", { method: "HEAD" });
+    const r = await fetch("/reposo.mp4", { method: "HEAD", cache: "no-store" });
     if (!r.ok) throw 0;
-    reposo.src = "/reposo.mp4";
+    reposo.src = "/reposo.mp4?t=" + Date.now();
     reposo.oncanplay = () => { reposo.classList.add("listo"); reposo.play().catch(() => {}); };
-  } catch { setTimeout(cargarReposo, 15000); }   // se está generando: reintenta
+  } catch { esperaReposo = setTimeout(cargarReposo, 15000); }   // se está generando: reintenta
 }
-cargarReposo();
 
 // ---- Reproductor de clips: dos <video> alternos, sin huecos entre clips -------
 // Los clips llegan desordenados (se generan en paralelo) y se reproducen por índice.
@@ -222,7 +392,7 @@ function avanzar() {
   if (v.dataset.url !== url) { v.dataset.url = url; v.src = url; }
   actual = v; hablando = true; marca("hablando", true);
   marca("pensando", false);
-  mensaje("");
+  if (estadoEl.classList.contains("error")) mensaje("");
   v.onended = v.onerror = () => {
     const anterior = v;
     actual = null; siguiente++;
@@ -240,16 +410,14 @@ function avanzar() {
 
 // ---- Micrófono siempre abierto + detección de voz ---------------------------
 const PREVIO_MS = 400, SILENCIO_MS = 1000, MIN_VOZ_MS = 450, MAX_VOZ_MS = 30000;
-let ctx, tasa, ruido = 0.006, previo = [], grabando = null, ultimaVoz = 0, inicioVoz = 0, silenciado = false;
+let ctx, tasa, ruido = 0.006, previo = [], grabando = null, ultimaVoz = 0, inicioVoz = 0, silenciado = true;
 
 const WORKLET = `class Captura extends AudioWorkletProcessor {
   process(entradas) { const c = entradas[0][0]; if (c) this.port.postMessage(c.slice(0)); return true; }
 } registerProcessor("captura", Captura);`;
 
-async function iniciarMicrofono() {
-  const flujo = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-  });
+async function iniciarMicrofono(flujo) {
+  flujo = flujo || await pedirMicrofono();
   ctx = new AudioContext();
   tasa = ctx.sampleRate;
   await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
@@ -264,8 +432,6 @@ function trozo(muestras) {
   const rms = Math.sqrt(suma / muestras.length);
   const ahora = performance.now();
   const nivel = Math.min(1, rms * 12);
-  $("nivel").style.opacity = silenciado ? 0 : 0.25 + nivel;
-  $("nivel").style.transform = `scale(${1 + nivel * 0.35})`;
   if (silenciado) { previo = []; grabando = null; return; }
 
   // Umbral adaptativo al ruido de fondo; más exigente mientras Luisa habla, para que
@@ -281,6 +447,7 @@ function trozo(muestras) {
       const partes = grabando; grabando = null; previo = [];
       marca("oyendo", false);
       if (ultimaVoz - inicioVoz >= MIN_VOZ_MS) enviar(partes);
+      else programarEnvio();          // fue ruido: retoma el envío pendiente
     }
   } else {
     previo.push(muestras);
@@ -289,6 +456,7 @@ function trozo(muestras) {
     if (hayVoz) {
       grabando = previo.slice(); previo = [];
       inicioVoz = ultimaVoz = ahora;
+      clearTimeout(temporizadorEnvio);
       marca("oyendo", true);
     }
   }
@@ -316,14 +484,44 @@ function aWav16k(partes) {
   return new Blob([buf], { type: "audio/wav" });
 }
 
-// ---- Turnos ---------------------------------------------------------------
-// Cada frase detectada abre un turno. Si resulta ser ruido («vacio»), no toca nada de
-// lo que esté pasando; si es una pregunta real, sustituye a la respuesta en curso.
-function enviar(partes) {
-  const datos = new FormData();
-  datos.append("audio", aWav16k(partes), "voz.wav");
-  return abrirTurno(datos);
+// ---- Micrófono → campo de texto ---------------------------------------------
+// Cada frase detectada se transcribe y se añade al campo. Tras un silencio prolongado,
+// si el campo no está vacío, se envía solo. También se puede escribir y pulsar Intro;
+// si la persona teclea, el envío automático se cancela y lo decide ella.
+const ESPERA_ENVIO_MS = 1500;   // silencio extra tras la última frase (ya hubo 1 s de VAD)
+let transcribiendo = 0, temporizadorEnvio = null, editado = false;
+
+async function enviar(partes) {
+  clearTimeout(temporizadorEnvio);
+  transcribiendo++;
+  marca("transcribiendo", true);
+  try {
+    const datos = new FormData();
+    datos.append("audio", aWav16k(partes), "voz.wav");
+    const r = await fetch("/api/transcribir", { method: "POST", body: datos });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    const texto = (await r.json()).texto;
+    if (texto) {
+      const campo = $("pregunta");
+      campo.value = (campo.value.trim() + " " + texto).trim();
+    }
+  } catch (e) { fallo(e.message); }
+  finally {
+    transcribiendo--;
+    marca("transcribiendo", transcribiendo > 0);
+    programarEnvio();
+  }
 }
+function programarEnvio() {
+  clearTimeout(temporizadorEnvio);
+  if (editado || grabando || transcribiendo) return;
+  temporizadorEnvio = setTimeout(() => {
+    if (!editado && !grabando && !transcribiendo && $("pregunta").value.trim()) mandarPregunta();
+  }, ESPERA_ENVIO_MS);
+}
+
+// ---- Turnos ---------------------------------------------------------------
+// Cada pregunta abre un turno que sustituye a la respuesta en curso.
 
 // Sin micrófono: el texto escrito entra como si fuera la transcripción del STT
 function enviarTexto(texto) {
@@ -383,7 +581,7 @@ async function abrirTurno(datos) {
   fuente.onerror = () => { fuente.close(); if (esActual() && !hablando) fallo("Se perdió la conexión con el servidor."); };
 }
 
-function volverAEscuchar() { if (!hablando) mensaje(""); }
+function volverAEscuchar() {}   // la última pregunta sigue visible hasta la siguiente
 
 function fallo(texto) {
   marca("pensando", false);
@@ -391,20 +589,182 @@ function fallo(texto) {
   setTimeout(() => { if (estadoEl.classList.contains("error")) mensaje(""); }, 6000);
 }
 
-// ---- Arranque ---------------------------------------------------------------
-$("empezar").onclick = async () => {
-  const aviso = $("inicio").querySelector("p");
-  if (!window.isSecureContext || !navigator.mediaDevices) {
-    aviso.textContent = "El micrófono solo funciona en https o en localhost. Abre la página como http://localhost:9090.";
-    return;
+// ---- Pantalla de entrada: avatar, vídeo, micrófono, modelos y salida de audio ----
+// La configuración se guarda en el servidor (SQLite) al pulsar «Entrar a la sala» y es
+// la propuesta por defecto la próxima vez. La primera vez: lo primero disponible.
+let opciones = null, flujoMic = null, escena = "noche";
+const FUNCIONES = ["stt", "llm", "tts", "animacion"];
+const interruptor = (id) => $(id).getAttribute("aria-checked") === "true";
+function fijarInterruptor(id, valor) { $(id).setAttribute("aria-checked", String(valor)); pintarVista(); }
+function avisar(texto = "", error = false) { $("aviso").textContent = texto; $("aviso").classList.toggle("error", error); }
+const avatarElegido = () => opciones?.avatares.find((a) => a.id === $("avatar").value);
+
+function llenar(select, lista, valor, vacio) {
+  select.innerHTML = "";
+  for (const o of lista) select.add(new Option(o.nombre, o.id));
+  if (!lista.length) select.add(new Option(vacio, ""));
+  select.disabled = !lista.length;
+  select.value = lista.some((o) => o.id === valor) ? valor : (lista[0]?.id ?? "");
+}
+
+function pintarVista() {
+  const av = avatarElegido();
+  const video = interruptor("usarVideo"), mic = interruptor("usarMic");
+  $("tarjeta").classList.toggle("solo-audio", !video);   // sin vídeo: fondo de color + inicial
+  const radios = [...document.querySelectorAll("#escenas [role=radio]")];
+  if (av) {
+    // Si el avatar no tiene el fondo elegido, se usa el primero que tenga
+    if (av.escenas.length && !av.escenas.includes(escena)) escena = av.escenas[0];
+    for (const b of radios) {
+      const activo = b.dataset.escena === escena;
+      b.disabled = av.escenas.length > 0 && !av.escenas.includes(b.dataset.escena);
+      b.setAttribute("aria-checked", String(activo));
+      b.tabIndex = activo ? 0 : -1;
+    }
+    $("vistaAvatar").src = `${av.imagen}&escena=${encodeURIComponent(escena)}`;
+    $("vistaAvatar").alt = av.nombre;
+    $("vistaInicial").textContent = av.nombre.charAt(0).toUpperCase();
   }
-  try { await iniciarMicrofono(); }
-  catch (e) { aviso.textContent = "No hay acceso al micrófono: " + e.message; return; }
-  reposo.play().catch(() => {});
-  $("inicio").hidden = true;
-  $("mic").hidden = false;
-  $("completa").hidden = false;
+  $("escenas").hidden = !video;          // el fondo solo importa con el vídeo encendido
+  $("vistaNota").textContent = (video ? "Vídeo animado" : "Solo voz (sin animar)") + " · "
+    + (mic ? "Micrófono" : "Solo texto");
+  $("usarVideo").title = video ? "Vídeo animado activado (más lento)" : "Vídeo animado desactivado: solo voz";
+  $("usarMic").title = mic ? "Hablarás por micrófono" : "Micrófono desactivado: escribirás tus preguntas";
+}
+
+async function cargarOpciones() {
+  try {
+    const r = await fetch("/api/opciones", { cache: "no-store" });
+    if (!r.ok) throw new Error(r.statusText);
+    opciones = await r.json();
+  } catch (e) { avisar("No se pudo leer la configuración: " + e.message, true); setTimeout(cargarOpciones, 5000); return; }
+  const p = opciones.propuesta;
+  llenar($("avatar"), opciones.avatares, p.avatar, "No hay avatares");
+  for (const a of opciones.no_disponibles || []) {
+    const o = new Option(`${a.nombre} (${a.motivo})`, "");
+    o.disabled = true;
+    $("avatar").add(o);
+  }
+  for (const f of FUNCIONES)
+    llenar($("m-" + f), opciones.modelos[f], p.modelos?.[f], "No hay modelos disponibles");
+  escena = p.escena || escena;
+  fijarInterruptor("usarVideo", !!p.video);
+  fijarInterruptor("usarMic", p.microfono !== false);
+  await listarSalidas(p.salida?.id);
+  $("entrar").disabled = !opciones.avatares.length;
+  avisar(opciones.guardada ? "" : "Primera vez: se ha elegido lo primero disponible de cada opción.");
+  if (!opciones.avatares.length) avisar("No hay ningún avatar completo. Créalo en el clonador (puerto 8094).", true);
+}
+
+// Salida de audio: altavoces o auriculares (setSinkId: Chrome/Edge)
+const puedeElegirSalida = "setSinkId" in HTMLMediaElement.prototype;
+async function listarSalidas(preferida) {
+  const sel = $("salida");
+  const actual = preferida ?? sel.value;
+  let salidas = [];
+  try { salidas = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audiooutput"); } catch {}
+  sel.innerHTML = "";
+  sel.add(new Option("Salida predeterminada", "default"));
+  salidas.filter((d) => d.deviceId && d.deviceId !== "default").forEach((d, i) =>
+    sel.add(new Option(d.label || `Altavoz ${i + 1}`, d.deviceId)));
+  sel.value = [...sel.options].some((o) => o.value === actual) ? actual : "default";
+  sel.disabled = !puedeElegirSalida;
+  if (!puedeElegirSalida) sel.title = "Este navegador no permite elegir la salida de audio";
+  sel.dataset.sinNombres = String(salidas.some((d) => !d.label));
+}
+// Los nombres de los dispositivos solo se ven tras dar permiso al micrófono
+$("salida").addEventListener("pointerdown", async () => {
+  if ($("salida").dataset.sinNombres !== "true" || flujoMic) return;
+  try { flujoMic = await pedirMicrofono(); await listarSalidas(); } catch {}
+});
+async function aplicarSalida(id) {
+  if (!puedeElegirSalida) return;
+  for (const v of [...reproductores, reposo]) await v.setSinkId(id === "default" ? "" : id).catch(() => {});
+}
+
+async function pedirMicrofono() {
+  if (!window.isSecureContext || !navigator.mediaDevices)
+    throw new Error("el micrófono solo funciona en https o en localhost (abre http://localhost:9090)");
+  return navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+  });
+}
+
+$("avatar").onchange = pintarVista;
+// Fondo: clic o flechas (patrón radiogroup)
+for (const b of document.querySelectorAll("#escenas [role=radio]")) {
+  b.onclick = () => { escena = b.dataset.escena; pintarVista(); };
+}
+$("escenas").addEventListener("keydown", (e) => {
+  const paso = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+  if (!paso) return;
+  e.preventDefault();
+  const radios = [...document.querySelectorAll("#escenas [role=radio]")].filter((b) => !b.disabled);
+  const i = radios.findIndex((b) => b.dataset.escena === escena);
+  const sig = radios[(i + paso + radios.length) % radios.length];
+  escena = sig.dataset.escena; pintarVista(); sig.focus();
+});
+$("usarVideo").onclick = () => fijarInterruptor("usarVideo", !interruptor("usarVideo"));
+$("usarMic").onclick = () => fijarInterruptor("usarMic", !interruptor("usarMic"));
+$("abrirModelos").onclick = () => $("modelos").showModal();
+
+$("entrar").onclick = async () => {
+  const sel = $("salida");
+  const config = {
+    avatar: $("avatar").value,
+    escena,
+    video: interruptor("usarVideo"),
+    microfono: interruptor("usarMic"),
+    modelos: Object.fromEntries(FUNCIONES.map((f) => [f, $("m-" + f).value])),
+    salida: { id: sel.value, nombre: sel.selectedOptions[0]?.textContent || "" },
+    reduccion_ruido: false,
+  };
+  $("entrar").disabled = true;
+  avisar("Preparando la sala…");
+  try {
+    if (config.microfono) {
+      try { flujoMic = flujoMic || await pedirMicrofono(); }
+      catch (e) { throw new Error("No hay acceso al micrófono: " + e.message); }
+    }
+    const r = await fetch("/api/configuracion", { method: "PUT", headers: { "Content-Type": "application/json" },
+                                                 body: JSON.stringify(config) });
+    const datos = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(datos.detail || r.statusText);
+    await entrarSala(config, datos);
+  } catch (e) {
+    avisar(e.message, true);
+    $("entrar").disabled = false;
+  }
 };
+
+async function entrarSala(config, datos) {
+  const av = avatarElegido();
+  document.title = `${datos.nombre || av.nombre} · Sala`;
+  $("fijo").src = `${av.imagen}&escena=${encodeURIComponent(datos.configuracion.escena)}`;
+  $("fijo").alt = av.nombre;
+  $("inicial").textContent = av.nombre.charAt(0).toUpperCase();
+  $("pregunta").placeholder = `Escribe lo que le dirías a ${av.nombre} y pulsa Intro`;
+  configSala = config;
+  nombreSala = av.nombre;
+  medio = config.video ? "video" : "audio";
+  pintarMedio();
+  await aplicarSalida(config.salida.id);
+  cargarReposo();
+  $("escribir").hidden = false;
+  $("ajustesSala").hidden = false;
+  fijarSwitch("salaVideo", config.video);
+  await ponerMicrofono(config.microfono);
+  $("entrada").hidden = true;
+  $("completa").hidden = false;
+  $("salir").hidden = false;
+  if (!datos.reposo) mensaje(`Preparando a ${av.nombre} en reposo; mientras, se ve su imagen fija.`);
+  $("pregunta").focus();
+}
+
+// Salir de la sala: vuelve a la pantalla de entrada con la configuración guardada
+$("salir").onclick = () => location.reload();
+
+cargarOpciones();
 
 // ---- Pantalla completa (botón, doble clic sobre el avatar o tecla F) ----------
 function alternarCompleta() {
@@ -434,30 +794,78 @@ function moverRaton() {
 }
 document.addEventListener("mousemove", moverRaton);
 
-$("sinMic").onclick = () => {
-  reposo.play().catch(() => {});
-  $("inicio").hidden = true;
-  $("completa").hidden = false;
-  $("escribir").hidden = false;
-  $("pregunta").focus();
-};
 function mandarPregunta() {
+  clearTimeout(temporizadorEnvio);
   const texto = $("pregunta").value.trim();
   if (!texto) return;
   $("pregunta").value = "";
+  editado = false;
   enviarTexto(texto);
 }
 $("escribir").onsubmit = (e) => { e.preventDefault(); mandarPregunta(); };
+// Si la persona teclea, el envío automático por silencio queda en sus manos (Intro)
+$("pregunta").addEventListener("input", (e) => {
+  if (e.isTrusted) { editado = $("pregunta").value.trim() !== ""; clearTimeout(temporizadorEnvio); }
+});
 $("pregunta").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); mandarPregunta(); }
 });
 
-$("mic").onclick = () => {
-  silenciado = !silenciado;
-  $("mic").setAttribute("aria-pressed", String(silenciado));
-  $("mic").title = silenciado ? "Activar micrófono" : "Silenciar micrófono";
-  if (silenciado) marca("oyendo", false);
+// ---- Controles de la sala: vídeo, micrófono y configuración avanzada -------------
+// Cada cambio se guarda en la configuración (SQLite): es la de defecto la próxima vez.
+let configSala = null, nombreSala = "";
+function fijarSwitch(id, valor) {
+  $(id).setAttribute("aria-checked", String(valor));
+  const textos = { salaVideo: ["Vídeo animado activado (más lento)", "Vídeo animado desactivado: solo voz"],
+                   salaMic: ["Micrófono activado", "Micrófono desactivado: solo texto"] }[id];
+  $(id).title = valor ? textos[0] : textos[1];
+}
+async function guardarSala(cambios) {
+  const config = { ...configSala, ...cambios };
+  const r = await fetch("/api/configuracion", { method: "PUT", headers: { "Content-Type": "application/json" },
+                                               body: JSON.stringify(config) });
+  const datos = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(datos.detail || r.statusText);
+  configSala = datos.configuracion;
+  return datos;
+}
+async function ponerMicrofono(activo) {
+  if (activo && !ctx) {
+    try { await iniciarMicrofono(flujoMic); }
+    catch (e) { fallo("No hay acceso al micrófono: " + e.message); activo = false; }
+  }
+  silenciado = !activo;
+  if (!activo) { grabando = null; previo = []; marca("oyendo", false); }
+  fijarSwitch("salaMic", activo);
+  $("pregunta").placeholder = activo
+    ? `Habla o escribe a ${nombreSala}; se envía tras una pausa o con Intro`
+    : `Escribe lo que le dirías a ${nombreSala} y pulsa Intro`;
+  return activo;
+}
+$("salaVideo").onclick = async () => {
+  const video = $("salaVideo").getAttribute("aria-checked") !== "true";
+  fijarSwitch("salaVideo", video);
+  medio = video ? "video" : "audio";
+  pintarMedio();
+  try {
+    const datos = await guardarSala({ video });
+    if (video && !datos.reposo) { mensaje(`Preparando a ${nombreSala} en reposo; mientras, se ve su imagen fija.`); cargarReposo(); }
+  } catch (e) { fallo(e.message); }
 };
+$("salaMic").onclick = async () => {
+  const activo = await ponerMicrofono($("salaMic").getAttribute("aria-checked") !== "true");
+  try { await guardarSala({ microfono: activo }); } catch (e) { fallo(e.message); }
+};
+// El engranaje abre la misma ventana de modelos; al pulsar «Listo» se aplican
+$("salaModelos").onclick = () => $("modelos").showModal();
+$("modelos").addEventListener("close", async () => {
+  if (!configSala) return;   // todavía en la pantalla de entrada
+  const modelos = Object.fromEntries(FUNCIONES.map((f) => [f, $("m-" + f).value]));
+  if (JSON.stringify(modelos) === JSON.stringify(configSala.modelos)) return;
+  mensaje("Aplicando los modelos…");
+  try { await guardarSala({ modelos }); mensaje("Modelos aplicados."); }
+  catch (e) { fallo(e.message); }
+});
 </script>
 </body>
 </html>

@@ -31,6 +31,8 @@ MODELOS = Path(os.environ.get("ANIMADOR_MODELOS", "/modelos"))
 SADTALKER = Path("/opt/sadtalker")
 TIMEOUT = int(os.environ.get("ANIMADOR_TIMEOUT", "3600"))
 PUERTO = int(os.environ.get("ANIMADOR_PUERTO", "8080"))
+# Dispositivo si la petición no lo indica: «gpu» (por defecto) o «cpu» (GPU sin memoria libre)
+DISPOSITIVO = os.environ.get("ANIMADOR_DISPOSITIVO", "gpu")
 
 # Animaciones simultáneas: 1 en GPUs pequeñas; más en equipos con memoria de sobra
 # (cada una es un proceso SadTalker independiente que libera su memoria al terminar)
@@ -99,7 +101,7 @@ def _comando(p, imagen, audio, resultados):
            "--batch_size", "1"]   # lote 1: el mínimo de VRAM en 4 GB
     if p.get("quieto", True):
         cmd.append("--still")
-    if p.get("dispositivo") == "cpu" or not _hay_gpu():
+    if (p.get("dispositivo") or DISPOSITIVO) == "cpu" or not _hay_gpu():
         cmd.append("--cpu")
     return cmd
 

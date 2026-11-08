@@ -43,3 +43,6 @@ datos/
 
 # ---- Modelo de speech-to-text (Whisper) --------------------------------------
 modelos-stt/
+
+# ---- Audios generados por la síntesis -----------------------------------------
+audios/generados/

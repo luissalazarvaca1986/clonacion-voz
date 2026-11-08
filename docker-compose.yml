@@ -178,18 +178,20 @@ services:
     restart: unless-stopped
 
   clonar-voz-llm:
-    # llama-server siempre cargado en la GPU: redacta las respuestas de la conversación
-    # y segmenta por emociones para el backend. Usa la imagen del backend (mismo llama.cpp).
+    # llama-server en la GPU en modo router: ofrece todos los .gguf de ./modelos-llm (se
+    # eligen en la web de conversación) y mantiene cargados hasta LLM_MAX_MODELOS.
+    # Redacta las respuestas y segmenta por emociones para el backend.
+    # Usa la imagen del backend (mismo llama.cpp).
     image: clonar-voz-backend:cuda
     pull_policy: never
     container_name: clonar-voz-llm
     user: "1000:1000"
     volumes:
       - ./modelos-llm:/modelos:ro
-    command: ["/opt/llama.cpp/llama-server", "-m", "/modelos/${LLM_MODELO:-Qwen3.5-2B-Q4_K_M.gguf}",
+    command: ["/opt/llama.cpp/llama-server", "--models-dir", "/modelos",
+              "--models-max", "${LLM_MAX_MODELOS:-2}",
               "--host", "0.0.0.0", "--port", "8080", "-ngl", "999", "-fa", "on",
-              "-c", "${LLM_CONTEXTO:-32768}", "-np", "${LLM_PARALELO:-4}", "--jinja",
-              "--alias", "qwen3.5-2b"]
+              "-c", "${LLM_CONTEXTO:-32768}", "-np", "${LLM_PARALELO:-4}", "--jinja"]
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://127.0.0.1:8080/health"]
       interval: 15s
@@ -223,19 +225,23 @@ services:
     volumes:
       - ./videos:/videos:ro                # MP4 que genera el backend
       - ./audios/generados:/audios:ro      # WAV del modo «solo audio»
-      - ./datos/conversa:/datos            # registro del bucle de reposo
+      - ./datos/conversa:/datos            # configuración (SQLite) y registros de reposo/relleno
+      - ./modelos-stt:/modelos-stt:ro      # para ofrecer los modelos de Whisper en la web
+      - ./conversa/demo:/conocimiento:ro   # respaldo si SecondBrain no está en marcha
     extra_hosts:
       - "host.docker.internal:host-gateway"   # Ollama y ChromaDB de SecondBrain
     environment:
-      - CONVERSA_AVATAR=Luisa
-      - CONVERSA_VOZ=447d4a974c1b          # Berenix
-      - CONVERSA_ESCENA=noche
+      # El avatar, el fondo y los modelos se eligen en la web («Entrar a la sala») y se
+      # guardan en ./datos/conversa/conversa.sqlite3. La primera vez: lo primero disponible.
+      - CONVERSA_ESCENA=noche              # fondo la primera vez
+      - CONVERSA_STT_MODELO=${STT_MODELO:-ggml-large-v3-turbo.bin}   # el que carga whisper-server
       - CONVERSA_MAX_PALABRAS=260          # ≈ 2 minutos de voz
       - CONVERSA_CLIPS_EN_PARALELO=3
-      - CONVERSA_VIDEO=1                   # por defecto si la web no elige: 1 vídeo, 0 solo audio
+      - CONVERSA_VIDEO=1                   # la primera vez: vídeo animado activado
       - CONVERSA_RELLENO=1                 # «Déjame pensarlo, te respondo en breve.» al empezar cada respuesta
       - CONVERSA_OLLAMA_URL=http://host.docker.internal:11434
       - CONVERSA_CHROMA_URL=http://host.docker.internal:8100
+      - CONVERSA_DIR_CONOCIMIENTO=/conocimiento
     depends_on:
       clonar-voz-backend:
         condition: service_healthy

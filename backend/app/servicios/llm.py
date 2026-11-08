@@ -71,6 +71,20 @@ class ClienteLLM:
         except (LLMNoDisponible, KeyError, IndexError, TypeError):
             return ""
 
+    def _modelo_peticion(self) -> str:
+        """Modelo para el campo «model». Con llama-server en modo router (varios modelos,
+        `--models-dir`) es obligatorio: se usa el que ya está cargado (el que eligió la
+        conversación) o, si no hay ninguno, el primero. Con un solo modelo se ignora."""
+        if self.bajo_demanda:
+            return ""
+        try:
+            modelos = self._pedir("/v1/models", timeout=3).get("data") or []
+        except LLMNoDisponible:
+            return ""
+        cargado = next((m["id"] for m in modelos
+                        if (m.get("status") or {}).get("value") == "loaded"), "")
+        return cargado or (modelos[0]["id"] if modelos else "")
+
     def estado(self) -> dict[str, Any]:
         """Para /api/estado: rápido y sin lanzar excepciones ni arrancar el modelo."""
         if self.bajo_demanda:
@@ -172,6 +186,7 @@ class ClienteLLM:
         """Chat cuya respuesta está forzada por gramática a cumplir `esquema`."""
         with self.sesion():
             respuesta = self._pedir("/v1/chat/completions", {
+                **({"model": m} if (m := self._modelo_peticion()) else {}),
                 "messages": [{"role": "system", "content": sistema},
                              {"role": "user", "content": usuario}],
                 "temperature": 0.1,

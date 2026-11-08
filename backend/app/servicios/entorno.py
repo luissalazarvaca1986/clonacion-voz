@@ -102,16 +102,46 @@ class DetectorEntorno:
         """Devuelve (modelo, mmproj) a partir de los .gguf presentes en la carpeta del modelo."""
         if not self._dir_modelo.is_dir():
             return "", ""
+        pares = self.listar_modelos_tts()
+        if pares:
+            return pares[0]["modelo"], pares[0]["mmproj"]
         ggufs = sorted(self._dir_modelo.glob("*.gguf"))
-        mmproj = next((g for g in ggufs if g.name.lower().startswith("mmproj")), None)
         modelo = next((g for g in ggufs if not g.name.lower().startswith("mmproj")), None)
+        mmproj = next((g for g in ggufs if g.name.lower().startswith("mmproj")), None)
         return (str(modelo) if modelo else "", str(mmproj) if mmproj else "")
+
+    @staticmethod
+    def _base_modelo(nombre: str) -> str:
+        """«Qwen3-TTS-12Hz-0.6B-Base-Q4_K_M» → «qwen3-tts-12hz-0.6b-base» (sin cuantización)."""
+        return re.sub(r"[-.](?:[IQ]\d\w*|bf16|f16|f32)$", "", nombre, flags=re.I).lower()
+
+    def listar_modelos_tts(self) -> list[dict[str, str]]:
+        """Modelos TTS de la carpeta, cada uno con el mmproj de su mismo tamaño (con varios
+        tamaños, p. ej. 0.6B y 1.7B, se emparejan por el nombre sin la cuantización)."""
+        if not self._dir_modelo.is_dir():
+            return []
+        ggufs = sorted(self._dir_modelo.glob("*.gguf"))
+        mmprojs = [g for g in ggufs if g.name.lower().startswith("mmproj")]
+        pares = []
+        for modelo in (g for g in ggufs if not g.name.lower().startswith("mmproj")):
+            base = self._base_modelo(modelo.stem)
+            mmproj = next((m for m in mmprojs if base in m.name.lower()), None)
+            if mmproj is None and len(mmprojs) == 1:
+                mmproj = mmprojs[0]
+            if mmproj is not None:
+                pares.append({"id": modelo.name, "modelo": str(modelo), "mmproj": str(mmproj)})
+        return pares
+
+    def modelo_tts(self, archivo: str) -> dict[str, str] | None:
+        """El par modelo/mmproj de un archivo de la carpeta (por su nombre), o None."""
+        return next((p for p in self.listar_modelos_tts() if p["id"] == archivo), None)
 
     def rutas_efectivas(self, cfg: dict[str, Any]) -> RutasEfectivas:
         """Rutas de config.json; las vacías se autodetectan."""
         binario = cfg.get("binario") or self.buscar_binario()
-        modelo = cfg.get("modelo") or ""
-        mmproj = cfg.get("mmproj") or ""
+        # Prioridad: config.json → CLONAR_TTS_MODELO/MMPROJ (por equipo) → autodetección
+        modelo = cfg.get("modelo") or os.environ.get("CLONAR_TTS_MODELO", "")
+        mmproj = cfg.get("mmproj") or os.environ.get("CLONAR_TTS_MMPROJ", "")
         if not modelo or not mmproj:
             auto_modelo, auto_mmproj = self.buscar_modelos()
             modelo = modelo or auto_modelo

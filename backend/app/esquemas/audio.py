@@ -43,6 +43,9 @@ class PeticionGenerar(BaseModel):
     pausa_ms: Optional[PausaMs] = None
     capas_gpu: Optional[CapasGpu] = None
     hilos: Optional[Hilos] = None
+    modelo_tts: Optional[str] = Field(
+        None, max_length=200, description="Archivo .gguf del TTS para esta petición "
+                                          "(ver /api/modelo/disponibles); vacío = el de config")
     modo: Literal["simple", "emocional"] = Field(
         "simple", description="emocional = cada segmento con su perfil de emoción")
     segmentos: Optional[list[Segmento]] = Field(

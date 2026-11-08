@@ -34,6 +34,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+import ajustes
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("conversa")
 
@@ -44,8 +46,7 @@ BACKEND_URL = os.getenv("CONVERSA_BACKEND_URL", "http://clonar-voz-backend:8080"
 OLLAMA_URL = os.getenv("CONVERSA_OLLAMA_URL", "http://host.docker.internal:11434")
 CHROMA_URL = os.getenv("CONVERSA_CHROMA_URL", "http://host.docker.internal:8100")
 EMBEDDING = os.getenv("CONVERSA_EMBEDDING", "nomic-embed-text")
-AVATAR = os.getenv("CONVERSA_AVATAR", "Luisa")
-VOZ = os.getenv("CONVERSA_VOZ", "447d4a974c1b")          # Berenix
+# Fondo preferido del avatar (si el avatar no lo tiene, se usa el primero que tenga)
 ESCENA = os.getenv("CONVERSA_ESCENA", "noche")
 ANIMADO = os.getenv("CONVERSA_ANIMADO", "1") == "1"
 # ~2,3 palabras por segundo en español: 260 palabras ≈ 2 minutos de voz
@@ -59,9 +60,9 @@ FRAGMENTOS = int(os.getenv("CONVERSA_FRAGMENTOS", "6"))
 SEGUNDOS_REPOSO = float(os.getenv("CONVERSA_SEGUNDOS_REPOSO", "8"))
 DIR_VIDEOS = Path(os.getenv("CONVERSA_DIR_VIDEOS", "/videos"))
 DIR_AUDIOS = Path(os.getenv("CONVERSA_DIR_AUDIOS", "/audios"))
-# Modo por defecto si la web no lo indica: vídeo animado (lento) o solo voz (rápido)
-VIDEO_POR_DEFECTO = os.getenv("CONVERSA_VIDEO", "1") == "1"
 DIR_DATOS = Path(os.getenv("CONVERSA_DIR_DATOS", "/datos"))
+# Documentos de respaldo cuando SecondBrain (Ollama + ChromaDB) no está en marcha
+DIR_CONOCIMIENTO = Path(os.getenv("CONVERSA_DIR_CONOCIMIENTO", "/conocimiento"))
 HISTORIAL_TURNOS = 4
 CHROMA_BASE = "/api/v2/tenants/default_tenant/databases/default_database"
 
@@ -70,7 +71,7 @@ _ALUCINACIONES = re.compile(
     r"subt[ií]tulos|amara\.org|suscr[ií]bete|gracias por ver|^\W*$", re.I)
 _FIN_FRASE = re.compile(r"(?<=[.!?…])[\"»”)]*\s+")
 
-_SISTEMA = """Eres Luisa, una asistente virtual que conversa por voz con las personas.
+_SISTEMA = """Eres {nombre}, una asistente virtual que conversa por voz con las personas.
 Respondes SIEMPRE en español neutro, con un tono cercano, amable y profesional.
 
 Reglas:
@@ -83,11 +84,71 @@ Reglas:
 - No menciones la «información de referencia», los «documentos» ni que eres un modelo."""
 
 
+# ---- Perfil de la sala: avatar y modelos elegidos en «Entrar a la sala» --------
+@dataclass(frozen=True)
+class Perfil:
+    avatar: str
+    nombre: str
+    voz: str
+    escena: str
+    video: bool
+    llm: str = ""
+    tts: str = ""
+    animacion: str = ""
+    stt: str = ""
+
+    @property
+    def clave(self) -> str:
+        return f"{self.avatar}-{self.escena}"
+
+
+PERFIL: Perfil | None = None
+STT_CARGADO = ajustes.STT_INICIAL
+
+
+def perfil_de(config: dict[str, Any], ops: dict[str, Any]) -> Perfil:
+    av = next(a for a in ops["avatares"] if a["id"] == config["avatar"])
+    preferida = config.get("escena") or ESCENA
+    escena = preferida if preferida in av["escenas"] or not av["escenas"] else av["escenas"][0]
+    m = config["modelos"]
+    return Perfil(avatar=av["id"], nombre=av["nombre"], voz=av["voz"], escena=escena,
+                  video=config["video"], llm=m.get("llm", ""), tts=m.get("tts", ""),
+                  animacion=m.get("animacion", ""), stt=m.get("stt", ""))
+
+
+async def perfil_actual() -> Perfil:
+    """El de la última vez que se entró a la sala; si no hay, lo primero disponible."""
+    global PERFIL
+    if PERFIL is None:
+        ops = await ajustes.opciones()
+        config = ajustes.cargar() or ajustes.por_defecto(ops)
+        try:
+            PERFIL = perfil_de(ajustes.validar(config, ops), ops)
+        except (ValueError, StopIteration):
+            PERFIL = perfil_de(ajustes.por_defecto(ops), ops)
+    return PERFIL
+
+
+async def cargar_stt(modelo: str) -> None:
+    """Cambia el modelo de whisper-server en caliente (POST /load) si hace falta."""
+    global STT_CARGADO
+    if not modelo or modelo == STT_CARGADO:
+        return
+    async with httpx.AsyncClient(timeout=120) as cliente:
+        r = await cliente.post(f"{STT_URL}/load",
+                               files={"model": (None, f"{ajustes.DIR_STT_REMOTO}/{modelo}")})
+    if r.status_code >= 400:
+        raise RuntimeError(f"Whisper no pudo cargar {modelo}: {r.text[:200]}")
+    STT_CARGADO = modelo
+    log.info("STT: cargado %s", modelo)
+
+
 # ---- Turnos ------------------------------------------------------------------
 @dataclass
 class Turno:
     id: str
     sesion: str
+    perfil: Perfil
     video: bool = True                # False: solo voz, sin animar con SadTalker
     eventos: asyncio.Queue = field(default_factory=asyncio.Queue)
     terminado: bool = False
@@ -142,7 +203,39 @@ async def transcribir(cliente: httpx.AsyncClient, wav: bytes) -> str:
         else texto
 
 
+def _palabras(texto: str) -> set[str]:
+    return {p for p in re.findall(r"\w{3,}", texto.lower())}
+
+
+def contexto_local(pregunta: str) -> list[dict[str, Any]]:
+    """Respaldo sin SecondBrain (equipo de desarrollo): secciones de los .md/.txt de
+    DIR_CONOCIMIENTO ordenadas por palabras en común con la pregunta."""
+    if not DIR_CONOCIMIENTO.is_dir():
+        return []
+    claves = _palabras(pregunta)
+    trozos: list[dict[str, Any]] = []
+    for archivo in sorted(DIR_CONOCIMIENTO.glob("*")):
+        if archivo.suffix.lower() not in (".md", ".txt") or not archivo.is_file():
+            continue
+        for seccion in re.split(r"\n(?=#{1,3} )", archivo.read_text(errors="replace")):
+            if seccion := seccion.strip():
+                comunes = len(claves & _palabras(seccion))
+                trozos.append({"texto": seccion, "documento": archivo.name,
+                               "distancia": 1 / (1 + comunes)})
+    return sorted(trozos, key=lambda t: t["distancia"])[:FRAGMENTOS]
+
+
 async def buscar_contexto(cliente: httpx.AsyncClient, pregunta: str) -> list[dict[str, Any]]:
+    """SecondBrain si está disponible; si no, los documentos locales."""
+    try:
+        return await buscar_secondbrain(cliente, pregunta)
+    except (httpx.HTTPError, KeyError, IndexError, ValueError) as e:
+        log.warning("SecondBrain no disponible (%s); uso %s", e.__class__.__name__,
+                    DIR_CONOCIMIENTO)
+        return contexto_local(pregunta)
+
+
+async def buscar_secondbrain(cliente: httpx.AsyncClient, pregunta: str) -> list[dict[str, Any]]:
     """Búsqueda semántica en todas las colecciones de SecondBrain, en paralelo y sin duplicados."""
     r = await cliente.post(f"{OLLAMA_URL}/api/embed",
                            json={"model": EMBEDDING, "input": pregunta}, timeout=30)
@@ -185,17 +278,20 @@ def limpiar_para_voz(texto: str) -> str:
     return " ".join(texto.split())
 
 
-async def frases_del_llm(cliente: httpx.AsyncClient, sesion: str, pregunta: str,
+async def frases_del_llm(cliente: httpx.AsyncClient, perfil: Perfil, sesion: str, pregunta: str,
                          fragmentos: list[dict[str, Any]]) -> AsyncIterator[str]:
     """Respuesta del LLM en streaming, entregada frase a frase en cuanto se completa cada una."""
     referencia = "\n\n".join(f"[{f['documento']}]\n{f['texto']}" for f in fragmentos) \
         or "(no hay información disponible)"
-    mensajes = [{"role": "system", "content": _SISTEMA.format(max_palabras=MAX_PALABRAS)}]
+    mensajes = [{"role": "system", "content": _SISTEMA.format(nombre=perfil.nombre,
+                                                              max_palabras=MAX_PALABRAS)}]
     mensajes += CONVERSACIONES.get(sesion, [])[-2 * HISTORIAL_TURNOS:]
     mensajes.append({"role": "user", "content":
                      f"INFORMACIÓN DE REFERENCIA:\n{referencia}\n\nPREGUNTA: {pregunta}"})
     pendiente = ""
     async with cliente.stream("POST", f"{LLM_URL}/v1/chat/completions", json={
+        # «model» elige el LLM en llama-server modo router; con un solo modelo se ignora
+        **({"model": perfil.llm} if perfil.llm else {}),
         "messages": mensajes, "temperature": 0.4, "top_p": 0.9, "stream": True,
         "max_tokens": int(MAX_PALABRAS * 2.2),
         "chat_template_kwargs": {"enable_thinking": False},
@@ -234,13 +330,15 @@ async def clips_de_respuesta(frases: AsyncIterator[str]) -> AsyncIterator[str]:
         yield " ".join(actual)
 
 
-async def sintetizar(cliente: httpx.AsyncClient, texto: str, video: bool,
+async def sintetizar(cliente: httpx.AsyncClient, texto: str, video: bool, perfil: Perfil,
                      tareas: set[str] | None = None) -> dict[str, Any]:
     """Voz (+ vídeo animado de Luisa si `video`) con el backend. Devuelve el evento «fin»
     con la URL pública del clip en `url`."""
     r = await cliente.post(f"{BACKEND_URL}/api/generar", json={
-        "texto": texto, "voz": VOZ, "idioma": "es", "modo": "emocional",
-        **({"video": True, "avatar": AVATAR, "escena": ESCENA, "animado": ANIMADO}
+        "texto": texto, "voz": perfil.voz, "idioma": "es", "modo": "emocional",
+        **({"modelo_tts": perfil.tts} if perfil.tts else {}),
+        **({"video": True, "avatar": perfil.avatar, "escena": perfil.escena, "animado": ANIMADO,
+            **({"motor_animacion": perfil.animacion} if perfil.animacion else {})}
            if video else {"video": False}),
     }, timeout=60)
     if r.status_code >= 400:
@@ -282,7 +380,7 @@ async def generar_clip(turno: Turno, indice: int, texto: str) -> None:
             return
         inicio = time.time()
         async with httpx.AsyncClient() as cliente:
-            ev = await sintetizar(cliente, texto, turno.video, turno.tareas_backend)
+            ev = await sintetizar(cliente, texto, turno.video, turno.perfil, turno.tareas_backend)
         log.info("Clip %d listo en %.1f s (%.1f s de audio)", indice,
                  time.time() - inicio, ev.get("duracion") or 0)
         await turno.emitir("clip", indice=indice, url=ev["url"],
@@ -296,31 +394,32 @@ RELLENO = os.getenv("CONVERSA_RELLENO", "1") == "1"
 _relleno_cerrojo = asyncio.Lock()
 
 
-def _registro_relleno(video: bool) -> Path:
-    clave = hashlib.sha1(f"{TEXTO_RELLENO}|{VOZ}|{AVATAR}|{ESCENA}".encode()).hexdigest()[:10]
+def _registro_relleno(perfil: Perfil, video: bool) -> Path:
+    clave = hashlib.sha1(f"{TEXTO_RELLENO}|{perfil.voz}|{perfil.avatar}|{perfil.escena}|"
+                         f"{perfil.tts}".encode()).hexdigest()[:10]
     return DIR_DATOS / f"relleno-{'video' if video else 'audio'}-{clave}.json"
 
 
-def url_relleno(video: bool) -> str | None:
+def url_relleno(perfil: Perfil, video: bool) -> str | None:
     """URL del relleno ya generado, o None si aún no existe (o se borró)."""
     if not RELLENO:
         return None
     try:
-        url = json.loads(_registro_relleno(video).read_text())["url"]
+        url = json.loads(_registro_relleno(perfil, video).read_text())["url"]
     except (OSError, ValueError, KeyError):
         return None
     carpeta = DIR_VIDEOS if url.startswith("/videos/") else DIR_AUDIOS
     return url if (carpeta / Path(url).name).is_file() else None
 
 
-async def crear_relleno(video: bool) -> str | None:
+async def crear_relleno(perfil: Perfil, video: bool) -> str | None:
     async with _relleno_cerrojo:
-        if url := url_relleno(video):
+        if url := url_relleno(perfil, video):
             return url
         async with httpx.AsyncClient() as cliente:
-            ev = await sintetizar(cliente, TEXTO_RELLENO, video)
+            ev = await sintetizar(cliente, TEXTO_RELLENO, video, perfil)
         DIR_DATOS.mkdir(parents=True, exist_ok=True)
-        _registro_relleno(video).write_text(json.dumps({"url": ev["url"]}))
+        _registro_relleno(perfil, video).write_text(json.dumps({"url": ev["url"]}))
         log.info("Relleno (%s) creado: %s", "vídeo" if video else "audio", ev["url"])
         return ev["url"]
 
@@ -341,7 +440,7 @@ async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) ->
                 await _cancelar_turno(anterior)
             await turno.emitir("transcripcion", texto=pregunta,
                                segundos=round(time.time() - inicio, 2))
-            if relleno := url_relleno(turno.video):
+            if relleno := url_relleno(turno.perfil, turno.video):
                 await turno.emitir("relleno", url=relleno, texto=TEXTO_RELLENO)
 
             fragmentos = await buscar_contexto(cliente, pregunta)
@@ -351,7 +450,7 @@ async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) ->
             respuesta: list[str] = []
             indice = 0
             async for clip in clips_de_respuesta(
-                    frases_del_llm(cliente, turno.sesion, pregunta, fragmentos)):
+                    frases_del_llm(cliente, turno.perfil, turno.sesion, pregunta, fragmentos)):
                 if turno.cancelado:
                     return
                 indice += 1
@@ -387,7 +486,7 @@ async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) ->
 
 
 # ---- Bucle de reposo -----------------------------------------------------------
-_reposo_cerrojo = asyncio.Lock()
+_reposo_cerrojo: dict[str, asyncio.Lock] = {}
 
 
 def _silencio_wav(segundos: float) -> bytes:
@@ -400,19 +499,34 @@ def _silencio_wav(segundos: float) -> bytes:
     return buf.getvalue()
 
 
-async def video_reposo() -> Path | None:
-    """Luisa en reposo (parpadea, respira) sobre su fondo: se genera una vez y se reutiliza."""
-    registro = DIR_DATOS / f"reposo-{AVATAR}-{ESCENA}.json"
+def _registro_reposo(perfil: Perfil) -> Path:
+    return DIR_DATOS / f"reposo-{perfil.clave}.json"
+
+
+def ruta_reposo(perfil: Perfil) -> Path | None:
+    try:
+        ruta = DIR_VIDEOS / json.loads(_registro_reposo(perfil).read_text())["video"]
+    except (OSError, ValueError, KeyError):
+        return None
+    return ruta if ruta.is_file() else None
+
+
+async def video_reposo(perfil: Perfil) -> Path | None:
+    """El avatar en reposo (parpadea, respira) sobre su fondo: se genera una vez y se reutiliza."""
+    registro = _registro_reposo(perfil)
     try:
         nombre = json.loads(registro.read_text())["video"]
         if (DIR_VIDEOS / nombre).is_file():
             return DIR_VIDEOS / nombre
     except (OSError, ValueError, KeyError):
         pass
-    async with _reposo_cerrojo:
+    async with _reposo_cerrojo.setdefault(perfil.clave, asyncio.Lock()):
+        if ruta := ruta_reposo(perfil):      # otro lo generó mientras esperaba
+            return ruta
         async with httpx.AsyncClient() as cliente:
             r = await cliente.post(f"{BACKEND_URL}/api/animaciones", data={
-                "motor": "sadtalker", "avatar": AVATAR, "escena": ESCENA, "quieto": "true",
+                "motor": perfil.animacion or "sadtalker", "avatar": perfil.avatar,
+                "escena": perfil.escena, "quieto": "true",
             }, files={"audio": ("silencio.wav", _silencio_wav(SEGUNDOS_REPOSO), "audio/wav")},
                 timeout=60)
             if r.status_code >= 400:
@@ -434,35 +548,99 @@ async def video_reposo() -> Path | None:
         return DIR_VIDEOS / trabajo["video"]
 
 
-@app.on_event("startup")
-async def preparar_reposo() -> None:
-    async def intentar() -> None:
+# ---- Preparación de la sala: bucle de reposo y relleno del perfil elegido ---------
+PREPARANDO: dict[str, asyncio.Task] = {}
+
+
+def preparar(perfil: Perfil) -> None:
+    """Genera en segundo plano lo que la sala necesita y aún no existe (una sola vez)."""
+    async def intentar(nombre: str, crear) -> None:
         for _ in range(60):   # espera a que backend y animador estén listos
             try:
-                if await video_reposo():
+                if await crear():
                     return
-            except httpx.HTTPError:
-                pass
+            except (httpx.HTTPError, RuntimeError) as e:
+                log.warning("%s pendiente: %s", nombre, e)
             await asyncio.sleep(30)
-    asyncio.create_task(intentar())
+
+    trabajos = {}
+    if perfil.video:   # el bucle de reposo solo se ve con el vídeo encendido
+        trabajos[f"reposo|{perfil.clave}|{perfil.animacion}"] = lambda: video_reposo(perfil)
+    if RELLENO:   # el de audio primero: tarda segundos; el de vídeo solo si se usa vídeo
+        trabajos[f"relleno-audio|{perfil}"] = lambda: crear_relleno(perfil, False)
+        if perfil.video:
+            trabajos[f"relleno-video|{perfil}"] = lambda: crear_relleno(perfil, True)
+    for clave, crear in trabajos.items():
+        if clave not in PREPARANDO or PREPARANDO[clave].done():
+            PREPARANDO[clave] = asyncio.create_task(intentar(clave.split("|")[0], crear))
 
 
 @app.on_event("startup")
-async def preparar_relleno() -> None:
-    async def intentar(video: bool) -> None:
+async def arrancar() -> None:
+    """Deja lista la sala de la última vez (o la de lo primero disponible)."""
+    async def tarea() -> None:
         for _ in range(60):
             try:
-                if await crear_relleno(video):
-                    return
-            except (httpx.HTTPError, RuntimeError) as e:
-                log.warning("Relleno (%s) pendiente: %s", "vídeo" if video else "audio", e)
-            await asyncio.sleep(30)
-    if RELLENO:
-        asyncio.create_task(intentar(False))   # el de audio primero: tarda segundos
-        asyncio.create_task(intentar(True))
+                perfil = await perfil_actual()
+                await cargar_stt(perfil.stt)
+                preparar(perfil)
+                return
+            except (httpx.HTTPError, RuntimeError, KeyError, StopIteration) as e:
+                log.warning("Sala pendiente: %s", e)
+                global PERFIL
+                PERFIL = None
+            await asyncio.sleep(20)
+    asyncio.create_task(tarea())
 
 
 # ---- API -------------------------------------------------------------------------
+@app.get("/api/opciones")
+async def ver_opciones() -> dict:
+    """Avatares y modelos disponibles en este equipo, más la configuración guardada
+    (`guardada` es null la primera vez: la web propone lo primero de cada lista)."""
+    ops = await ajustes.opciones()
+    guardada = ajustes.cargar()
+    return {**ops, "guardada": guardada, "propuesta": guardada or ajustes.por_defecto(ops)}
+
+
+@app.put("/api/configuracion")
+async def guardar_configuracion(datos: dict[str, Any]) -> dict:
+    """«Entrar a la sala»: valida la configuración, la guarda en SQLite (será la de
+    defecto la próxima vez), aplica los modelos y prepara la sala."""
+    global PERFIL
+    ops = await ajustes.opciones()
+    try:
+        config = ajustes.validar(datos, ops)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    perfil = perfil_de(config, ops)
+    try:
+        await cargar_stt(perfil.stt)
+    except (httpx.HTTPError, RuntimeError) as e:
+        raise HTTPException(502, f"No se pudo cargar el modelo de voz a texto: {e}")
+    ajustes.guardar(config)
+    if PERFIL and PERFIL.avatar != perfil.avatar:
+        CONVERSACIONES.clear()          # otro avatar: conversación nueva
+    PERFIL = perfil
+    preparar(perfil)
+    return {"configuracion": config, "reposo": ruta_reposo(perfil) is not None,
+            "nombre": perfil.nombre}
+
+
+@app.post("/api/transcribir")
+async def solo_transcribir(audio: UploadFile = File(...)) -> dict:
+    """Modo micrófono: cada frase detectada se transcribe y la web la añade al campo de
+    texto; el envío lo decide la web (silencio prolongado o Intro)."""
+    wav = await audio.read()
+    if len(wav) < 8000:
+        return {"texto": ""}
+    async with httpx.AsyncClient() as cliente:
+        try:
+            return {"texto": await transcribir(cliente, wav)}
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"No se pudo transcribir: {e}")
+
+
 @app.post("/api/turno")
 async def crear_turno(audio: UploadFile | None = File(None), texto: str = Form(""),
                       sesion: str = Form("anonima"), medio: str = Form("")) -> dict:
@@ -474,8 +652,9 @@ async def crear_turno(audio: UploadFile | None = File(None), texto: str = Form("
     texto = texto.strip()[:2000]
     if not texto and (not wav or len(wav) < 8000):
         raise HTTPException(400, "Falta el audio o el texto")
-    video = VIDEO_POR_DEFECTO if medio not in ("video", "audio") else medio == "video"
-    turno = Turno(id=uuid.uuid4().hex[:12], sesion=sesion[:64], video=video)
+    perfil = await perfil_actual()
+    video = perfil.video if medio not in ("video", "audio") else medio == "video"
+    turno = Turno(id=uuid.uuid4().hex[:12], sesion=sesion[:64], perfil=perfil, video=video)
     TURNOS[turno.id] = turno
     asyncio.create_task(procesar(turno, wav, texto or None))
     return {"id": turno.id}
@@ -527,16 +706,28 @@ async def salud() -> dict:
                 estado[nombre] = (await cliente.get(url)).status_code < 500
             except httpx.HTTPError:
                 estado[nombre] = False
-    registro = DIR_DATOS / f"reposo-{AVATAR}-{ESCENA}.json"
-    return {"ok": all(estado.values()), "servicios": estado, "avatar": AVATAR,
-            "escena": ESCENA, "reposo": registro.is_file()}
+    secondbrain = estado["ollama"] and estado["chroma"]
+    esenciales = [v for k, v in estado.items() if k not in ("ollama", "chroma")]
+    perfil = PERFIL
+    return {"ok": all(esenciales) and (secondbrain or DIR_CONOCIMIENTO.is_dir()),
+            "servicios": estado, "conocimiento": "secondbrain" if secondbrain else "local",
+            "perfil": perfil.__dict__ if perfil else None,
+            "reposo": bool(perfil and ruta_reposo(perfil))}
 
 
 @app.get("/avatar.png")
-async def avatar() -> Response:
-    """Imagen fija del avatar sobre su fondo: se ve mientras se carga el bucle de reposo."""
+async def avatar(avatar: str = "", escena: str = "") -> Response:
+    """Imagen fija del avatar sobre su fondo: vista previa en la pantalla de entrada y
+    fondo de la sala mientras se carga el bucle de reposo."""
+    perfil = await perfil_actual()
+    id_avatar = avatar or perfil.avatar
+    escena = escena or perfil.escena
+    if not re.fullmatch(r"[\w .-]{1,80}", id_avatar) or not re.fullmatch(r"\w{1,30}", escena):
+        raise HTTPException(400, "Avatar o escena no válidos")
     async with httpx.AsyncClient(timeout=30) as cliente:
-        r = await cliente.get(f"{BACKEND_URL}/api/avatares/{AVATAR}/vista/{ESCENA}")
+        r = await cliente.get(f"{BACKEND_URL}/api/avatares/{id_avatar}/vista/{escena}")
+        if r.status_code == 400:   # ese avatar no tiene la escena preferida: su primera
+            r = await cliente.get(f"{BACKEND_URL}/api/avatares/{id_avatar}/vista/dia")
     if r.status_code != 200:
         raise HTTPException(502, "No se pudo obtener la imagen del avatar")
     return Response(r.content, media_type=r.headers.get("content-type", "image/png"),
@@ -545,14 +736,10 @@ async def avatar() -> Response:
 
 @app.api_route("/reposo.mp4", methods=["GET", "HEAD"])
 async def reposo() -> FileResponse:
-    registro = DIR_DATOS / f"reposo-{AVATAR}-{ESCENA}.json"
-    try:
-        ruta = DIR_VIDEOS / json.loads(registro.read_text())["video"]
-    except (OSError, ValueError, KeyError):
+    ruta = ruta_reposo(await perfil_actual())
+    if ruta is None:
         raise HTTPException(404, "El bucle de reposo aún se está generando")
-    if not ruta.is_file():
-        raise HTTPException(404, "El bucle de reposo aún se está generando")
-    return FileResponse(ruta, media_type="video/mp4")
+    return FileResponse(ruta, media_type="video/mp4", headers={"Cache-Control": "no-cache"})
 
 
 @app.api_route("/videos/{archivo}", methods=["GET", "HEAD"])
