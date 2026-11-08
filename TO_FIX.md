@@ -30,8 +30,7 @@ Léelo entero antes de tocar nada. Sustituye a `CONTINUAR.md` en lo que se contr
      vídeo encendido).
    - Interruptores de vídeo y micrófono, y «Configuración personalizada» (un selector de
      modelo por función: STT, LLM, TTS y animación).
-   - «Ajustes adicionales»: salida de audio (`setSinkId`) y «Noise Reduction», que está
-     **pendiente**: el usuario explicará qué debe hacer.
+   - «Ajustes adicionales»: salida de audio (`setSinkId`) y «Noise Reduction» (ver más abajo).
    - Con el vídeo apagado se ve el fondo de color con el círculo e inicial, no el avatar.
 2. **Configuración en SQLite** (`conversa/ajustes.py`, `datos/conversa/conversa.sqlite3`).
    La primera vez se propone lo primero disponible de cada lista; al entrar se valida y
@@ -125,9 +124,29 @@ curl -s localhost:9090/api/opciones | python3 -m json.tool
    - Cambia el LLM y el TTS desde el engranaje dentro de la sala.
    - Prueba el micrófono: frase → campo → envío tras la pausa.
    - Comprueba que la configuración persiste al recargar.
-   - Confirma que «Noise Reduction» aparece como pendiente.
-8. **Pendiente funcional:** «Noise Reduction». Espera a que el usuario explique qué debe
-   hacer; no lo implementes por tu cuenta.
+   - Prueba la «Simulación de movimiento» con Luisa y con Luis, y la calibración del
+     Noise Reduction.
+8. **Simulación de movimiento** (commit «Simulación de movimiento y Noise Reduction»).
+   Es la alternativa ligera al vídeo con IA y la primera opción de «Animación del avatar».
+   El navegador anima la foto con una malla WebGL sobre los puntos de la cara; la boca
+   sigue la voz y hay parpadeos y vaivén. Al backend solo se le pide la voz.
+   - Cada avatar necesita `avatares/<id>/rostro.json` (98 puntos WFLW y la `posicion` del
+     avatar). Los de Luisa y Luis ya están versionados. Un avatar sin ese archivo, o con
+     la posición cambiada, sale deshabilitado («sin puntos del rostro»).
+   - Para generar el de un avatar nuevo, sigue la cabecera de `herramientas/rostro.py`. Se
+     ejecuta en el contenedor del animador con facexlib y los pesos de
+     `modelos-animacion/gfpgan/weights`. **Verifica que funciona con el animador del GB10**
+     (Python 3.10 + torch 2.9): en la 1650 se probó con Python 3.8 + torch 1.12. Después
+     añade `avatar` y `posicion` (de `/api/avatares`) al JSON; ver cómo se hizo en el commit.
+   - `conversa` monta `./avatares:/avatares:ro` (ya añadido al compose de `gb10`).
+   - Pruébala en Chrome. La apertura de la boca (5,5 % del alto de la cara) y la curva
+     adaptativa del volumen ya las aprobó el usuario; no las cambies sin consultarle.
+9. **Noise Reduction** (hecho; pruébalo con micrófono en el Spark). Al activarlo se abre una
+   calibración: 10 s de ruido de la sala y 10 s de voz. Con eso se calculan el umbral de
+   voz intencional, el filtro de banda de voz y la resta espectral del ruido antes de
+   Whisper. Apagado = funcionamiento anterior, tal cual. Está en la entrada (Ajustes
+   adicionales) y en la sala (engranaje). La calibración depende del micrófono y del lugar:
+   en el Spark hay que calibrar de nuevo.
 
 ## Al terminar
 

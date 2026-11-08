@@ -98,6 +98,16 @@ class Perfil:
     stt: str = ""
 
     @property
+    def simulacion(self) -> bool:
+        """«Simulación de movimiento»: el navegador anima la imagen con la voz; al backend
+        solo se le pide audio (nada de SadTalker ni de bucle de reposo)."""
+        return self.animacion == ajustes.SIMULACION["id"]
+
+    @property
+    def video_ia(self) -> bool:
+        return self.video and not self.simulacion
+
+    @property
     def clave(self) -> str:
         return f"{self.avatar}-{self.escena}"
 
@@ -564,11 +574,11 @@ def preparar(perfil: Perfil) -> None:
             await asyncio.sleep(30)
 
     trabajos = {}
-    if perfil.video:   # el bucle de reposo solo se ve con el vídeo encendido
+    if perfil.video_ia:   # el bucle de reposo solo se ve con el vídeo de IA
         trabajos[f"reposo|{perfil.clave}|{perfil.animacion}"] = lambda: video_reposo(perfil)
-    if RELLENO:   # el de audio primero: tarda segundos; el de vídeo solo si se usa vídeo
+    if RELLENO:   # el de audio primero: tarda segundos; el de vídeo solo con vídeo de IA
         trabajos[f"relleno-audio|{perfil}"] = lambda: crear_relleno(perfil, False)
-        if perfil.video:
+        if perfil.video_ia:
             trabajos[f"relleno-video|{perfil}"] = lambda: crear_relleno(perfil, True)
     for clave, crear in trabajos.items():
         if clave not in PREPARANDO or PREPARANDO[clave].done():
@@ -623,7 +633,8 @@ async def guardar_configuracion(datos: dict[str, Any]) -> dict:
         CONVERSACIONES.clear()          # otro avatar: conversación nueva
     PERFIL = perfil
     preparar(perfil)
-    return {"configuracion": config, "reposo": ruta_reposo(perfil) is not None,
+    return {"configuracion": config,
+            "reposo": perfil.simulacion or ruta_reposo(perfil) is not None,
             "nombre": perfil.nombre}
 
 
@@ -653,7 +664,9 @@ async def crear_turno(audio: UploadFile | None = File(None), texto: str = Form("
     if not texto and (not wav or len(wav) < 8000):
         raise HTTPException(400, "Falta el audio o el texto")
     perfil = await perfil_actual()
-    video = perfil.video if medio not in ("video", "audio") else medio == "video"
+    # Con la simulación de movimiento el vídeo lo hace el navegador: al backend, solo voz
+    video = (perfil.video if medio not in ("video", "audio") else medio == "video") \
+        and not perfil.simulacion
     turno = Turno(id=uuid.uuid4().hex[:12], sesion=sesion[:64], perfil=perfil, video=video)
     TURNOS[turno.id] = turno
     asyncio.create_task(procesar(turno, wav, texto or None))
@@ -732,6 +745,17 @@ async def avatar(avatar: str = "", escena: str = "") -> Response:
         raise HTTPException(502, "No se pudo obtener la imagen del avatar")
     return Response(r.content, media_type=r.headers.get("content-type", "image/png"),
                     headers={"Cache-Control": "max-age=300"})
+
+
+@app.get("/rostro.json")
+async def ver_rostro(avatar: str) -> dict:
+    """Puntos de la cara del avatar para la «Simulación de movimiento»."""
+    if not re.fullmatch(r"[\w .-]{1,80}", avatar):
+        raise HTTPException(400, "Avatar no válido")
+    datos = ajustes.rostro(avatar)
+    if datos is None:
+        raise HTTPException(404, "Ese avatar no tiene puntos del rostro")
+    return datos
 
 
 @app.api_route("/reposo.mp4", methods=["GET", "HEAD"])

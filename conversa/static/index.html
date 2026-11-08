@@ -27,6 +27,11 @@
     object-fit: cover; }
   /* Capas: imagen fija < bucle de reposo < los dos reproductores de clips */
   #reposo { opacity: 0; transition: opacity .6s ease; }
+  /* Simulación de movimiento: lienzo WebGL que anima la imagen del avatar con la voz */
+  .escenario > canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
+  body.simulacion .escenario > canvas { display: block; }
+  body.simulacion #fijo, body.simulacion #reposo { visibility: hidden; }
+  body.completa .escenario > canvas { object-fit: contain; }
   #reposo.listo { opacity: 1; }
   .clip { opacity: 0; transition: opacity .18s linear; }
   .clip.visible { opacity: 1; }
@@ -200,6 +205,40 @@
     background: var(--piensa); color: #0b0f1c; display: grid; place-items: center; cursor: pointer; }
   .escribir .enviar svg { width: 20px; height: 20px; translate: -1px 1px; }
   .escribir .enviar:hover { filter: brightness(1.1); }
+  /* Noise Reduction (entrada, sala y calibración) */
+  .celda-ruido { gap: 10px; }
+  .celda-ruido .info { color: var(--tenue); font-size: 12px; }
+  .boton-texto { background: none; border: 0; font: inherit; font-size: 13px; color: var(--piensa);
+    cursor: pointer; padding: 2px 4px; }
+  .boton-texto:hover { text-decoration: underline; }
+  .seccion-ruido { border-top: 1px solid rgba(255,255,255,.08); padding-top: 14px; display: grid; gap: 8px; }
+  .seccion-ruido .fila { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font-size: 14px; }
+  dialog.ruido { width: min(94vw, 480px); }
+  .fase { display: grid; gap: 8px; padding: 12px; border-radius: 10px; background: rgba(255,255,255,.04);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.07); }
+  .fase b { font-size: 14px; }
+  .fase p { margin: 0 !important; font-size: 13px; color: var(--tenue); }
+  .fase .frase { color: var(--texto); font-style: italic; }
+  .fase[aria-disabled="true"] { opacity: .45; }
+  .fase .acciones-fase { display: flex; align-items: center; gap: 10px; }
+  .grabar { font: inherit; font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 8px; border: 0;
+    background: var(--error); color: #fff; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .grabar::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #fff; }
+  .grabar:disabled { opacity: .5; cursor: default; }
+  .medidor { flex: 1; height: 8px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden;
+    position: relative; }
+  .medidor span { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--escucha); transition: width .06s; }
+  .progreso { height: 3px; border-radius: 999px; background: rgba(255,255,255,.06); overflow: hidden; }
+  .progreso span { display: block; height: 100%; width: 0; background: var(--piensa); }
+  .fase small { font-size: 12px; color: var(--tenue); min-height: 1em; }
+  .veredicto { font-size: 13px; padding: 10px 12px; border-radius: 8px; background: rgba(255,255,255,.04); }
+  .veredicto.buena { color: var(--escucha); } .veredicto.aceptable { color: #ffd166; }
+  .veredicto.mala { color: var(--error); }
+  dialog.modelos .pie { gap: 8px; }
+  dialog.modelos .pie button:disabled { opacity: .4; cursor: default; }
+  dialog.modelos .pie .secundario { background: transparent; color: var(--texto);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.25); }
   [hidden] { display: none !important; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 </style>
@@ -210,6 +249,7 @@
   <div class="escenario">
     <img id="fijo" alt="">
     <video id="reposo" muted loop playsinline></video>
+    <canvas id="simulacion" aria-hidden="true"></canvas>
     <video class="clip" id="clipA" playsinline preload="auto"></video>
     <video class="clip" id="clipB" playsinline preload="auto"></video>
     <div class="inicial" aria-hidden="true"><span id="inicial"></span></div>
@@ -307,9 +347,13 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>
         <select id="salida" aria-label="Dispositivo de salida de audio"><option value="default">Salida predeterminada</option></select>
       </label>
-      <div class="pendiente" title="Pendiente de definir">
+      <div class="celda-ruido">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12h2M6 8v8M10 5v14M14 9v6M18 7v10M22 12h-2"/></svg>
-        Noise Reduction <em>pendiente</em>
+        <button type="button" class="interruptor" id="usarRuido" role="switch" aria-checked="false"
+                title="Filtra el ruido de la sala y solo envía la voz intencional (requiere calibrar)">
+          Noise Reduction <span class="pista"></span>
+        </button>
+        <button type="button" class="boton-texto" id="calibrarEntrada" hidden>Calibrar</button>
       </div>
     </div>
   </section>
@@ -323,7 +367,50 @@
     <label class="campo">Modelo de lenguaje (LLM)<select id="m-llm"></select></label>
     <label class="campo">Texto a voz (TTS)<select id="m-tts"></select></label>
     <label class="campo">Animación del avatar<select id="m-animacion"></select></label>
+    <div class="seccion-ruido" id="ruidoSala" hidden>
+      <div class="fila">
+        <span>Noise Reduction</span>
+        <button type="button" class="interruptor" id="salaRuido" role="switch" aria-checked="false"
+                aria-label="Noise Reduction"><span class="pista"></span></button>
+      </div>
+      <div class="fila">
+        <small class="info" id="salaRuidoInfo">Sin calibrar</small>
+        <button type="button" class="boton-texto" id="salaCalibrar">Calibrar con audios</button>
+      </div>
+    </div>
     <div class="pie"><button value="ok">Listo</button></div>
+  </form>
+</dialog>
+
+<dialog class="modelos ruido" id="ruido">
+  <form method="dialog">
+    <h3>Noise Reduction · calibración</h3>
+    <p>Dos grabaciones de 10 segundos en el lugar donde vas a conversar. Con la diferencia se
+       filtra el ruido de la sala y solo se envía a la transcripción tu voz intencional.</p>
+    <div class="fase" id="fase1">
+      <b>1. Ruido de la sala</b>
+      <p>Pulsa grabar y <strong>no hables</strong> durante 10 segundos. Deja que suene la sala como siempre.</p>
+      <div class="acciones-fase"><button type="button" class="grabar" id="grabarRuido">Grabar silencio</button>
+        <div class="medidor"><span id="nivel1"></span></div></div>
+      <div class="progreso"><span id="prog1"></span></div>
+      <small id="res1"></small>
+    </div>
+    <div class="fase" id="fase2" aria-disabled="true">
+      <b>2. Tu voz</b>
+      <p>Pulsa grabar y habla con normalidad durante 10 segundos, a la distancia habitual. Por ejemplo:</p>
+      <p class="frase">«Hola, quisiera saber el horario de atención, cuánto cuesta el envío a domicilio y
+         qué plantas me recomiendan para una terraza con mucho sol.»</p>
+      <div class="acciones-fase"><button type="button" class="grabar" id="grabarVoz" disabled>Grabar voz</button>
+        <div class="medidor"><span id="nivel2"></span></div></div>
+      <div class="progreso"><span id="prog2"></span></div>
+      <small id="res2"></small>
+    </div>
+    <div class="veredicto" id="veredicto" hidden></div>
+    <div class="pie">
+      <button value="cancelar" class="secundario">Cancelar</button>
+      <button type="button" class="secundario" id="usarAnterior" hidden>Usar la anterior</button>
+      <button type="button" id="guardarRuido" disabled>Guardar y activar</button>
+    </div>
   </form>
 </dialog>
 
@@ -341,7 +428,21 @@ const sesion = (() => {
 const escapar = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 // ---- Vídeo animado o solo audio: lo fija la pantalla de entrada y no cambia en la sala
 let medio = "audio";
-function pintarMedio() { marca("solo-audio", medio === "audio"); }
+// Reducción de ruido: { activo, calibracion: { ruido_db, voz_db, umbral_db, margen_db, perfil } }
+let nr = { activo: false, calibracion: null };
+// Vídeo en la sala: apagado (círculo con la inicial), IA (vídeo generado, p. ej. SadTalker)
+// o «Simulación de movimiento» (el navegador anima la imagen con la voz, sin IA de vídeo).
+function modoVideo() {
+  if (!configSala?.video) return "apagado";
+  return configSala.modelos?.animacion === "simulacion" ? "simulacion" : "ia";
+}
+function pintarMedio() {
+  const modo = configSala ? modoVideo() : (medio === "video" ? "ia" : "apagado");
+  medio = modo === "ia" ? "video" : "audio";   // al servidor: vídeo solo si lo genera la IA
+  marca("solo-audio", modo === "apagado");
+  marca("simulacion", modo === "simulacion");
+  if (modo === "simulacion") activarSimulacion(); else simulador?.detener();
+}
 
 function mensaje(html = "", error = false) { estadoEl.innerHTML = html; estadoEl.classList.toggle("error", error); }
 function marca(clase, activa) { document.body.classList.toggle(clase, activa); }
@@ -372,7 +473,9 @@ function nuevoTurnoEnPantalla(id) {
   turnoEnPantalla = id; clips = new Map(); siguiente = 1; totalClips = null;
 }
 function detenerClips() {
-  for (const v of reproductores) { v.pause(); v.classList.remove("visible"); v.removeAttribute("src"); v.load(); }
+  // Se olvida también qué tenía cargado: si el clip siguiente es el mismo archivo (el relleno
+  // se repite en cada turno), hay que volver a cargarlo o el reproductor se queda colgado
+  for (const v of reproductores) { v.pause(); v.classList.remove("visible"); v.removeAttribute("src"); delete v.dataset.url; v.load(); }
   actual = null; hablando = false; marca("hablando", false);
 }
 function precargar() {
@@ -410,20 +513,39 @@ function avanzar() {
 
 // ---- Micrófono siempre abierto + detección de voz ---------------------------
 const PREVIO_MS = 400, SILENCIO_MS = 1000, MIN_VOZ_MS = 450, MAX_VOZ_MS = 30000;
+let trozosGrabados = 0, trozosVoz = 0, trozoUltimaVoz = 0, calibrando = false;
 let ctx, tasa, ruido = 0.006, previo = [], grabando = null, ultimaVoz = 0, inicioVoz = 0, silenciado = true;
 
 const WORKLET = `class Captura extends AudioWorkletProcessor {
   process(entradas) { const c = entradas[0][0]; if (c) this.port.postMessage(c.slice(0)); return true; }
 } registerProcessor("captura", Captura);`;
 
+let fuenteMic, filtrosMic, nodoMic;
 async function iniciarMicrofono(flujo) {
   flujo = flujo || await pedirMicrofono();
   ctx = new AudioContext();
   tasa = ctx.sampleRate;
   await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
-  const nodo = new AudioWorkletNode(ctx, "captura");
-  ctx.createMediaStreamSource(flujo).connect(nodo);
-  nodo.port.onmessage = (e) => trozo(e.data);
+  nodoMic = new AudioWorkletNode(ctx, "captura");
+  fuenteMic = ctx.createMediaStreamSource(flujo);
+  filtrosMic = filtrosVoz(ctx);
+  conectarMic();
+  nodoMic.port.onmessage = (e) => trozo(e.data);
+}
+// Banda de la voz (120 Hz – 4 kHz): quita zumbidos graves y ruidos agudos de la sala
+function filtrosVoz(c) {
+  const paso = c.createBiquadFilter(); paso.type = "highpass"; paso.frequency.value = 120;
+  const bajo = c.createBiquadFilter(); bajo.type = "lowpass"; bajo.frequency.value = 4000;
+  paso.connect(bajo);
+  return [paso, bajo];
+}
+// Sin reducción de ruido: micrófono → captura, tal cual. Con ella: micrófono → filtros → captura.
+function conectarMic() {
+  if (!fuenteMic) return;
+  fuenteMic.disconnect(); filtrosMic[1].disconnect();
+  if (nr.activo) { fuenteMic.connect(filtrosMic[0]); filtrosMic[1].connect(nodoMic); }
+  else fuenteMic.connect(nodoMic);
+  ruido = 0.006;
 }
 
 function trozo(muestras) {
@@ -432,21 +554,28 @@ function trozo(muestras) {
   const rms = Math.sqrt(suma / muestras.length);
   const ahora = performance.now();
   const nivel = Math.min(1, rms * 12);
-  if (silenciado) { previo = []; grabando = null; return; }
+  if (silenciado || calibrando) { previo = []; grabando = null; return; }
 
-  // Umbral adaptativo al ruido de fondo; más exigente mientras Luisa habla, para que
-  // el eco residual de los altavoces no dispare una pregunta falsa.
-  const umbral = Math.max(0.015, ruido * 3.2) * (hablando ? 2.2 : 1);
+  // Sin reducción de ruido: umbral adaptativo al ruido de fondo. Con ella: el umbral
+  // calibrado (entre el ruido de la sala y tu voz). En ambos casos, más exigente mientras
+  // el avatar habla, para que el eco de los altavoces no dispare una pregunta falsa.
+  const umbral = nr.activo
+    ? Math.pow(10, nr.calibracion.umbral_db / 20) * (hablando ? 1.6 : 1)
+    : Math.max(0.015, ruido * 3.2) * (hablando ? 2.2 : 1);
   const hayVoz = rms > umbral;
   if (!grabando && !hayVoz) ruido = ruido * 0.98 + rms * 0.02;
 
   if (grabando) {
     grabando.push(muestras);
-    if (hayVoz) ultimaVoz = ahora;
+    trozosGrabados++;
+    if (hayVoz) { ultimaVoz = ahora; trozosVoz++; trozoUltimaVoz = trozosGrabados; }
     if (ahora - ultimaVoz > SILENCIO_MS || ahora - inicioVoz > MAX_VOZ_MS) {
       const partes = grabando; grabando = null; previo = [];
       marca("oyendo", false);
-      if (ultimaVoz - inicioVoz >= MIN_VOZ_MS) enviar(partes);
+      // Con reducción de ruido, solo la entrada intencional: bastante voz real en el
+      // fragmento (no un golpe, una risa o una conversación de fondo)
+      const intencional = !nr.activo || trozosVoz / Math.max(1, trozoUltimaVoz) >= 0.2;
+      if (ultimaVoz - inicioVoz >= MIN_VOZ_MS && intencional) enviar(partes);
       else programarEnvio();          // fue ruido: retoma el envío pendiente
     }
   } else {
@@ -456,6 +585,7 @@ function trozo(muestras) {
     if (hayVoz) {
       grabando = previo.slice(); previo = [];
       inicioVoz = ultimaVoz = ahora;
+      trozosGrabados = trozosVoz = trozoUltimaVoz = 1;
       clearTimeout(temporizadorEnvio);
       marca("oyendo", true);
     }
@@ -484,6 +614,95 @@ function aWav16k(partes) {
   return new Blob([buf], { type: "audio/wav" });
 }
 
+// ---- Reducción de ruido: audio a 16 kHz, FFT y resta espectral ------------------
+function a16k(partes, tasaOrigen) {
+  const total = partes.reduce((n, p) => n + p.length, 0);
+  const plano = new Float32Array(total);
+  let o = 0; for (const p of partes) { plano.set(p, o); o += p.length; }
+  const factor = tasaOrigen / 16000, n = Math.floor(total / factor), out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor(i * factor), b = Math.min(total, Math.floor((i + 1) * factor));
+    let s = 0; for (let j = a; j < b; j++) s += plano[j];
+    out[i] = s / Math.max(1, b - a);
+  }
+  return out;
+}
+function wav16k(x) {
+  const pcm = new Int16Array(x.length);
+  for (let i = 0; i < x.length; i++) { const v = Math.max(-1, Math.min(1, x[i])); pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
+  const buf = new ArrayBuffer(44 + pcm.byteLength), d = new DataView(buf);
+  const txt = (off, s) => { for (let i = 0; i < s.length; i++) d.setUint8(off + i, s.charCodeAt(i)); };
+  txt(0, "RIFF"); d.setUint32(4, 36 + pcm.byteLength, true); txt(8, "WAVE"); txt(12, "fmt ");
+  d.setUint32(16, 16, true); d.setUint16(20, 1, true); d.setUint16(22, 1, true);
+  d.setUint32(24, 16000, true); d.setUint32(28, 32000, true); d.setUint16(32, 2, true);
+  d.setUint16(34, 16, true); txt(36, "data"); d.setUint32(40, pcm.byteLength, true);
+  new Int16Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: "audio/wav" });
+}
+const N_FFT = 512, SALTO = 256;
+const VENTANA = Float32Array.from({ length: N_FFT }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N_FFT));
+function fft(re, im) {   // radix-2, en el sitio
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const a = i + k, b = a + len / 2;
+        const tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+        [cr, ci] = [cr * wr - ci * wi, cr * wi + ci * wr];
+      }
+    }
+  }
+}
+// Perfil del ruido: magnitud media por banda de frecuencia (257 bandas a 16 kHz)
+function perfilRuido(x) {
+  const acc = new Float64Array(N_FFT / 2 + 1), re = new Float32Array(N_FFT), im = new Float32Array(N_FFT);
+  let tramas = 0;
+  for (let i = 0; i + N_FFT <= x.length; i += SALTO, tramas++) {
+    for (let k = 0; k < N_FFT; k++) { re[k] = x[i + k] * VENTANA[k]; im[k] = 0; }
+    fft(re, im);
+    for (let k = 0; k <= N_FFT / 2; k++) acc[k] += Math.hypot(re[k], im[k]);
+  }
+  return Array.from(acc, (v) => +(v / Math.max(1, tramas)).toPrecision(4));
+}
+// Resta espectral con el perfil calibrado (sobresustracción 1,5, suelo 0,1 y ganancia
+// suavizada en el tiempo para evitar el «ruido musical»)
+function restarRuido(x, perfil) {
+  const pad = new Float32Array(x.length + 2 * N_FFT); pad.set(x, N_FFT);
+  const out = new Float32Array(pad.length), re = new Float32Array(N_FFT), im = new Float32Array(N_FFT);
+  const previa = new Float32Array(N_FFT / 2 + 1).fill(1);
+  for (let i = 0; i + N_FFT <= pad.length; i += SALTO) {
+    for (let k = 0; k < N_FFT; k++) { re[k] = pad[i + k] * VENTANA[k]; im[k] = 0; }
+    fft(re, im);
+    for (let k = 0; k <= N_FFT / 2; k++) {
+      const mag = Math.hypot(re[k], im[k]) || 1e-9;
+      let g = Math.max(0.1, 1 - 1.5 * (perfil[k] || 0) / mag);
+      g = previa[k] = 0.5 * previa[k] + 0.5 * g;
+      re[k] *= g; im[k] *= g;
+      if (k > 0 && k < N_FFT / 2) { re[N_FFT - k] *= g; im[N_FFT - k] *= g; }
+    }
+    for (let k = 0; k < N_FFT; k++) im[k] = -im[k];      // IFFT = conj(FFT(conj)) / n
+    fft(re, im);
+    for (let k = 0; k < N_FFT; k++) out[i + k] += re[k] / N_FFT;   // Hann al 50 % suma 1
+  }
+  return out.subarray(N_FFT, N_FFT + x.length);
+}
+// Lo que se envía a Whisper con la reducción activa: 16 kHz, sin el silencio final de la
+// detección y con la huella del ruido restada
+function wavLimpio(partes) {
+  let x = a16k(partes, tasa);
+  const sobra = Math.floor(16000 * Math.max(0, SILENCIO_MS - 250) / 1000);
+  if (x.length - sobra > 16000 * 0.3) x = x.subarray(0, x.length - sobra);
+  const perfil = nr.calibracion?.perfil;
+  return wav16k(perfil?.length ? restarRuido(x, perfil) : x);
+}
+
 // ---- Micrófono → campo de texto ---------------------------------------------
 // Cada frase detectada se transcribe y se añade al campo. Tras un silencio prolongado,
 // si el campo no está vacío, se envía solo. También se puede escribir y pulsar Intro;
@@ -497,7 +716,7 @@ async function enviar(partes) {
   marca("transcribiendo", true);
   try {
     const datos = new FormData();
-    datos.append("audio", aWav16k(partes), "voz.wav");
+    datos.append("audio", nr.activo ? wavLimpio(partes) : aWav16k(partes), "voz.wav");
     const r = await fetch("/api/transcribir", { method: "POST", body: datos });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
     const texto = (await r.json()).texto;
@@ -650,6 +869,10 @@ async function cargarOpciones() {
   escena = p.escena || escena;
   fijarInterruptor("usarVideo", !!p.video);
   fijarInterruptor("usarMic", p.microfono !== false);
+  const rr = p.reduccion_ruido;
+  nr = rr && typeof rr === "object" ? { activo: !!rr.activo && !!rr.calibracion, calibracion: rr.calibracion || null }
+                                    : { activo: false, calibracion: null };
+  pintarRuido();
   await listarSalidas(p.salida?.id);
   $("entrar").disabled = !opciones.avatares.length;
   avisar(opciones.guardada ? "" : "Primera vez: se ha elegido lo primero disponible de cada opción.");
@@ -678,6 +901,8 @@ $("salida").addEventListener("pointerdown", async () => {
   try { flujoMic = await pedirMicrofono(); await listarSalidas(); } catch {}
 });
 async function aplicarSalida(id) {
+  salidaElegida = id;
+  if (ctxVoz?.setSinkId) await ctxVoz.setSinkId(id === "default" ? "" : id).catch(() => {});
   if (!puedeElegirSalida) return;
   for (const v of [...reproductores, reposo]) await v.setSinkId(id === "default" ? "" : id).catch(() => {});
 }
@@ -717,7 +942,7 @@ $("entrar").onclick = async () => {
     microfono: interruptor("usarMic"),
     modelos: Object.fromEntries(FUNCIONES.map((f) => [f, $("m-" + f).value])),
     salida: { id: sel.value, nombre: sel.selectedOptions[0]?.textContent || "" },
-    reduccion_ruido: false,
+    reduccion_ruido: nr,
   };
   $("entrar").disabled = true;
   avisar("Preparando la sala…");
@@ -744,9 +969,8 @@ async function entrarSala(config, datos) {
   $("fijo").alt = av.nombre;
   $("inicial").textContent = av.nombre.charAt(0).toUpperCase();
   $("pregunta").placeholder = `Escribe lo que le dirías a ${av.nombre} y pulsa Intro`;
-  configSala = config;
+  configSala = datos.configuracion;
   nombreSala = av.nombre;
-  medio = config.video ? "video" : "audio";
   pintarMedio();
   await aplicarSalida(config.salida.id);
   cargarReposo();
@@ -845,11 +1069,10 @@ async function ponerMicrofono(activo) {
 $("salaVideo").onclick = async () => {
   const video = $("salaVideo").getAttribute("aria-checked") !== "true";
   fijarSwitch("salaVideo", video);
-  medio = video ? "video" : "audio";
-  pintarMedio();
   try {
     const datos = await guardarSala({ video });
-    if (video && !datos.reposo) { mensaje(`Preparando a ${nombreSala} en reposo; mientras, se ve su imagen fija.`); cargarReposo(); }
+    pintarMedio();
+    if (modoVideo() === "ia" && !datos.reposo) { mensaje(`Preparando a ${nombreSala} en reposo; mientras, se ve su imagen fija.`); cargarReposo(); }
   } catch (e) { fallo(e.message); }
 };
 $("salaMic").onclick = async () => {
@@ -857,15 +1080,391 @@ $("salaMic").onclick = async () => {
   try { await guardarSala({ microfono: activo }); } catch (e) { fallo(e.message); }
 };
 // El engranaje abre la misma ventana de modelos; al pulsar «Listo» se aplican
-$("salaModelos").onclick = () => $("modelos").showModal();
+$("salaModelos").onclick = () => { $("ruidoSala").hidden = false; pintarRuido(); $("modelos").showModal(); };
 $("modelos").addEventListener("close", async () => {
   if (!configSala) return;   // todavía en la pantalla de entrada
   const modelos = Object.fromEntries(FUNCIONES.map((f) => [f, $("m-" + f).value]));
   if (JSON.stringify(modelos) === JSON.stringify(configSala.modelos)) return;
   mensaje("Aplicando los modelos…");
-  try { await guardarSala({ modelos }); mensaje("Modelos aplicados."); }
+  try { await guardarSala({ modelos }); pintarMedio(); mensaje("Modelos aplicados."); }
   catch (e) { fallo(e.message); }
 });
+// ---- Simulación de movimiento ----------------------------------------------------
+// Técnica clásica de los programas de webcam de hace 20 años: una malla de triángulos sobre
+// los puntos de la cara (rostro.json) deforma la foto en tiempo real. La boca la mueve el
+// audio que suena (volumen → apertura; espectro → boca estirada o redonda) y se añaden
+// parpadeos y un leve vaivén. Sin IA de vídeo: cero tiempo de generación.
+let simulador = null, ctxVoz = null, analizadorVoz = null, salidaElegida = "default";
+
+// La voz pasa por Web Audio para poder medirla (solo se activa con la simulación)
+function analizadorDeVoz() {
+  if (analizadorVoz) return analizadorVoz;
+  ctxVoz = new AudioContext();
+  analizadorVoz = ctxVoz.createAnalyser();
+  analizadorVoz.fftSize = 1024;
+  analizadorVoz.smoothingTimeConstant = 0.2;
+  analizadorVoz.connect(ctxVoz.destination);
+  for (const v of reproductores) ctxVoz.createMediaElementSource(v).connect(analizadorVoz);
+  if (ctxVoz.setSinkId && salidaElegida !== "default") ctxVoz.setSinkId(salidaElegida).catch(() => {});
+  return analizadorVoz;
+}
+
+// Si el navegador dejó el audio suspendido (reproducción automática), cualquier gesto lo reanuda
+for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, () => { if (ctxVoz?.state === "suspended") ctxVoz.resume(); });
+
+async function activarSimulacion() {
+  const av = opciones?.avatares.find((a) => a.id === configSala.avatar);
+  if (!av) return;
+  try {
+    ctxVoz?.resume();
+    simulador = simulador || new Simulador($("simulacion"));
+    const r = await fetch(`/rostro.json?avatar=${encodeURIComponent(av.id)}`);
+    if (!r.ok) throw new Error("el avatar no tiene puntos del rostro");
+    await simulador.cargar(`${av.imagen}&escena=${encodeURIComponent(configSala.escena)}`, await r.json());
+    simulador.iniciar(analizadorDeVoz());
+  } catch (e) { fallo("Simulación de movimiento: " + e.message); marca("simulacion", false); }
+}
+
+function delaunay(pts) {   // Bowyer-Watson; pts = [[x, y], …] → [[i, j, k], …]
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  const minX = Math.min(...xs), minY = Math.min(...ys), d = Math.max(Math.max(...xs) - minX, Math.max(...ys) - minY) * 10;
+  const P = pts.concat([[minX - d, minY - d], [minX + 2 * d, minY - d], [minX - d, minY + 2 * d]]);
+  const n = pts.length;
+  const circulo = (a, b, c) => {
+    const [ax, ay] = P[a], [bx, by] = P[b], [cx, cy] = P[c];
+    const D = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    const ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / D;
+    const uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / D;
+    return [ux, uy, (ax - ux) ** 2 + (ay - uy) ** 2];
+  };
+  let tris = [[n, n + 1, n + 2, circulo(n, n + 1, n + 2)]];
+  for (let i = 0; i < n; i++) {
+    const [x, y] = P[i], malos = [], buenos = [];
+    for (const t of tris) ((x - t[3][0]) ** 2 + (y - t[3][1]) ** 2 < t[3][2] ? malos : buenos).push(t);
+    const aristas = new Map();
+    for (const t of malos) for (const [a, b] of [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]) {
+      const k = a < b ? a + "," + b : b + "," + a;
+      aristas.set(k, aristas.has(k) ? null : [a, b]);
+    }
+    tris = buenos;
+    for (const e of aristas.values()) if (e) tris.push([e[0], e[1], i, circulo(e[0], e[1], i)]);
+  }
+  return tris.filter((t) => t[0] < n && t[1] < n && t[2] < n).map((t) => [t[0], t[1], t[2]]);
+}
+
+class Simulador {
+  constructor(lienzo) {
+    this.lienzo = lienzo;
+    const gl = this.gl = lienzo.getContext("webgl", { antialias: true, premultipliedAlpha: false });
+    if (!gl) throw new Error("este navegador no tiene WebGL");
+    const sombreador = (tipo, src) => { const s = gl.createShader(tipo); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+    const prog = this.prog = gl.createProgram();
+    gl.attachShader(prog, sombreador(gl.VERTEX_SHADER,
+      "attribute vec2 p; attribute vec2 t; uniform vec2 tam; varying vec2 v;" +
+      "void main(){ v = t; vec2 c = p / tam * 2.0 - 1.0; gl_Position = vec4(c.x, -c.y, 0.0, 1.0); }"));
+    gl.attachShader(prog, sombreador(gl.FRAGMENT_SHADER,
+      "precision mediump float; varying vec2 v; uniform sampler2D img; uniform vec4 color;" +
+      "void main(){ gl_FragColor = color.a > 0.0 ? color : texture2D(img, v); }"));
+    gl.linkProgram(prog); gl.useProgram(prog);
+    this.bufP = gl.createBuffer(); this.bufT = gl.createBuffer(); this.bufI = gl.createBuffer();
+    this.uTam = gl.getUniformLocation(prog, "tam"); this.uColor = gl.getUniformLocation(prog, "color");
+    this.aP = gl.getAttribLocation(prog, "p"); this.aT = gl.getAttribLocation(prog, "t");
+    this.textura = gl.createTexture();
+    this.activo = false;
+  }
+
+  async cargar(url, rostro) {
+    if (this.url === url && this.rostro === JSON.stringify(rostro.grupos)) return;
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const gl = this.gl;
+    this.W = this.lienzo.width = img.naturalWidth; this.H = this.lienzo.height = img.naturalHeight;
+    gl.bindTexture(gl.TEXTURE_2D, this.textura);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+                          [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+      gl.texParameteri(gl.TEXTURE_2D, k, v);
+    this.url = url; this.rostro = JSON.stringify(rostro.grupos);
+    this.malla(rostro.grupos);
+  }
+
+  // Puntos de la cara + frente + anillo interior (se mueven con la cabeza) + anillo
+  // exterior y bordes de la imagen (fijos): solo la cara y su entorno se deforman.
+  malla(G) {
+    const pts = [], idx = {}, cabeza = [];
+    const anadir = (nombre, lista, deCabeza = true) => {
+      idx[nombre] = pts.length;
+      for (const p of lista) { if (deCabeza) cabeza.push(pts.length); pts.push([p[0], p[1]]); }
+    };
+    for (const g of ["contorno", "ceja_izq", "ceja_der", "nariz", "ojo_izq", "ojo_der", "boca_ext", "boca_int"]) anadir(g, G[g]);
+    const prom = (l) => [l.reduce((a, p) => a + p[0], 0) / l.length, l.reduce((a, p) => a + p[1], 0) / l.length];
+    const ojos = prom([...G.ojo_izq, ...G.ojo_der]), barbilla = G.contorno[16];
+    const altoCara = barbilla[1] - ojos[1], anchoCara = Math.hypot(G.contorno[32][0] - G.contorno[0][0], G.contorno[32][1] - G.contorno[0][1]);
+    const cejaY = prom([...G.ceja_izq, ...G.ceja_der])[1];
+    anadir("frente", [...G.ceja_izq, ...G.ceja_der].filter((_, i) => i % 2 === 0).map((p) => [p[0], p[1] - 0.55 * altoCara]));
+    const cx = prom(G.contorno)[0], arriba = cejaY - 0.55 * altoCara, cy = (arriba + barbilla[1]) / 2, hy = (barbilla[1] - arriba) / 2;
+    const anillo = (rx, ry, n) => Array.from({ length: n }, (_, k) => {
+      const a = 2 * Math.PI * k / n;
+      return [Math.min(this.W - 1, Math.max(1, cx + rx * Math.cos(a))), Math.min(this.H - 1, Math.max(1, cy + ry * Math.sin(a)))];
+    });
+    anadir("anillo_int", anillo(0.68 * anchoCara, 1.18 * hy, 16));
+    anadir("anillo_ext", anillo(1.05 * anchoCara, 1.65 * hy, 18), false);
+    const W = this.W, H = this.H;
+    anadir("bordes", [[0, 0], [W / 2, 0], [W, 0], [W, H / 2], [W, H], [W / 2, H], [0, H], [0, H / 2]], false);
+    // Pequeño desorden para evitar puntos exactamente alineados en la triangulación
+    const reposo = pts.map((p, i) => [p[0] + ((i * 7919) % 13) * 1e-3, p[1] + ((i * 104729) % 17) * 1e-3]);
+    this.reposo = reposo; this.idx = idx; this.cabeza = cabeza;
+    this.medidas = { altoCara, anchoCara, pivote: G.nariz[6], anchoBoca: Math.hypot(G.boca_ext[6][0] - G.boca_ext[0][0], G.boca_ext[6][1] - G.boca_ext[0][1]) };
+    const tris = delaunay(reposo);
+    this.nIndices = tris.length * 3;
+    const gl = this.gl;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.bufI);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(tris.flat()), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.bufT);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(reposo.flatMap((p) => [p[0] / W, p[1] / H])), gl.STATIC_DRAW);
+    this.pos = new Float32Array(reposo.length * 2);
+    this.estado = { voz: 0, ancho: 0, parpado: 0, proximoParpadeo: performance.now() + 1500, parpadeoDesde: -1 };
+  }
+
+  iniciar(analizador) {
+    this.analizador = analizador;
+    this.tiempo = new Float32Array(analizador ? analizador.fftSize : 0);
+    this.espectro = new Float32Array(analizador ? analizador.frequencyBinCount : 0);
+    if (this.activo) return;
+    this.activo = true;
+    const bucle = (t) => { if (!this.activo) return; this.cuadro(t); requestAnimationFrame(bucle); };
+    requestAnimationFrame(bucle);
+  }
+  detener() { this.activo = false; }
+
+  oir() {   // → { voz 0..1, ancho -1..1 }
+    const a = this.analizador;
+    if (!a) return { voz: 0, ancho: 0 };
+    a.getFloatTimeDomainData(this.tiempo);
+    let suma = 0; for (const m of this.tiempo) suma += m * m;
+    const db = 10 * Math.log10(suma / this.tiempo.length + 1e-12);
+    // Curva adaptativa: relativa al pico reciente (baja ~9 dB/s). Lo que cae 24 dB por debajo
+    // del pico cierra la boca, así se marcan las sílabas sea cual sea el volumen de la voz.
+    this.pico = Math.max(db, (this.pico ?? -30) - 0.15);
+    const voz = db < -55 ? 0 : Math.max(0, Math.min(1, (db - (this.pico - 24)) / 24));
+    a.getFloatFrequencyData(this.espectro);
+    const hz = a.context.sampleRate / a.fftSize;
+    const banda = (f1, f2) => { let e = 0; for (let k = Math.floor(f1 / hz); k <= Math.ceil(f2 / hz); k++) e += 10 ** (this.espectro[k] / 10); return e; };
+    const graves = banda(250, 900), agudos = banda(1800, 4000);
+    const ancho = voz > 0.12 ? Math.max(-1, Math.min(1, (agudos / (graves + agudos + 1e-12) - 0.22) * 3.5)) : 0;
+    return { voz, ancho };
+  }
+
+  cuadro(ahora) {
+    const e = this.estado, m = this.medidas, I = this.idx, R = this.reposo, P = this.pos;
+    const { voz, ancho } = this.oir();
+    e.voz += (voz - e.voz) * (voz > e.voz ? 0.5 : 0.5);
+    e.ancho += (ancho - e.ancho) * 0.3;
+    // Parpadeo: cada 2–5,5 s, 150 ms (a veces doble)
+    if (e.parpadeoDesde < 0 && ahora >= e.proximoParpadeo) e.parpadeoDesde = ahora;
+    if (e.parpadeoDesde >= 0) {
+      const f = (ahora - e.parpadeoDesde) / 150;
+      e.parpado = f >= 1 ? 0 : Math.sin(Math.PI * f);
+      if (f >= 1) { e.parpadeoDesde = -1; e.proximoParpadeo = ahora + (Math.random() < 0.15 ? 180 : 2000 + Math.random() * 3500); }
+    }
+    for (let i = 0; i < R.length; i++) { P[2 * i] = R[i][0]; P[2 * i + 1] = R[i][1]; }
+    const mover = (i, dx, dy) => { P[2 * i] += dx; P[2 * i + 1] += dy; };
+    // Boca: la mandíbula baja con la voz; las comisuras se estiran (E/I) o se juntan (O/U)
+    const abre = e.voz < 0.06 ? 0 : e.voz;
+    // Apertura moderada (la mitad que antes) y más suave en volúmenes medios
+    const D = abre ** 1.3 * 0.055 * m.altoCara, Dx = e.ancho * 0.06 * m.anchoBoca * Math.min(1, abre * 2);
+    const be = I.boca_ext, bi = I.boca_int;
+    for (const k of [1, 2, 3, 4, 5]) mover(be + k, 0, -D * 0.08);
+    for (const k of [7, 8, 9, 10, 11]) mover(be + k, 0, D * 0.92);
+    for (const k of [1, 2, 3]) mover(bi + k, 0, -D * 0.08);
+    for (const k of [5, 6, 7]) mover(bi + k, 0, D);
+    mover(be, -Dx, D * 0.4); mover(be + 6, Dx, D * 0.4); mover(bi, -Dx * 0.9, D * 0.4); mover(bi + 4, Dx * 0.9, D * 0.4);
+    for (let k = 0; k < 33; k++) { const w = Math.max(0, 1 - Math.abs(k - 16) / 10); mover(I.contorno + k, 0, D * 0.7 * w ** 1.3); }
+    // Párpados: los de arriba bajan hacia los de abajo
+    for (const o of [I.ojo_izq, I.ojo_der])
+      for (const [a, b] of [[1, 7], [2, 6], [3, 5]]) {
+        P[2 * (o + a) + 1] += (P[2 * (o + b) + 1] - P[2 * (o + a) + 1]) * e.parpado * 0.92;
+      }
+    // Cabeza: vaivén suave y un leve asentimiento al hablar
+    const t = ahora / 1000;
+    const giro = 0.010 * Math.sin(0.63 * t) + 0.004 * Math.sin(1.7 * t + 1) + 0.006 * e.voz * Math.sin(3.1 * t);
+    const tx = 0.004 * m.anchoCara * Math.sin(0.5 * t), ty = 0.003 * m.altoCara * Math.sin(0.8 * t) + 0.012 * m.altoCara * e.voz;
+    const [px, py] = m.pivote, c = Math.cos(giro), s = Math.sin(giro);
+    for (const i of this.cabeza) {
+      const x = P[2 * i] - px, y = P[2 * i + 1] - py;
+      P[2 * i] = px + x * c - y * s + tx; P[2 * i + 1] = py + x * s + y * c + ty;
+    }
+    this.dibujar(D);
+  }
+
+  dibujar(D) {
+    const gl = this.gl, P = this.pos, bi = this.idx.boca_int;
+    gl.viewport(0, 0, this.W, this.H);
+    gl.uniform2f(this.uTam, this.W, this.H);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.bufP);
+    gl.bufferData(gl.ARRAY_BUFFER, P, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(this.aP); gl.vertexAttribPointer(this.aP, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.bufT);
+    gl.enableVertexAttribArray(this.aT); gl.vertexAttribPointer(this.aT, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.bufI);
+    gl.uniform4f(this.uColor, 0, 0, 0, 0);
+    gl.drawElements(gl.TRIANGLES, this.nIndices, gl.UNSIGNED_SHORT, 0);
+    if (D < 0.6) return;
+    // Interior de la boca (oscuro) y dientes superiores, dibujados encima de la malla
+    const punto = (k) => [P[2 * (bi + k)], P[2 * (bi + k) + 1]];
+    const labio = [0, 1, 2, 3, 4, 5, 6, 7].map(punto);
+    const centro = [labio.reduce((a, p) => a + p[0], 0) / 8, labio.reduce((a, p) => a + p[1], 0) / 8];
+    const abanico = []; for (let k = 0; k < 8; k++) abanico.push(...centro, ...labio[k], ...labio[(k + 1) % 8]);
+    const dientes = [], alto = Math.min(D * 0.25, 0.012 * this.medidas.altoCara);
+    for (let k = 0; k < 4; k++) {
+      const [a, b] = [labio[k], labio[k + 1]];
+      const da = k === 0 ? 0 : alto, db = k + 1 === 4 ? 0 : alto;
+      dientes.push(...a, ...b, b[0], b[1] + db, ...a, b[0], b[1] + db, a[0], a[1] + da);
+    }
+    const solido = (v, r, g, b) => {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.bufS || (this.bufS = gl.createBuffer()));
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.DYNAMIC_DRAW);
+      gl.vertexAttribPointer(this.aP, 2, gl.FLOAT, false, 0, 0);
+      gl.disableVertexAttribArray(this.aT); gl.vertexAttrib2f(this.aT, 0, 0);
+      gl.uniform4f(this.uColor, r, g, b, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, v.length / 2);
+    };
+    solido(abanico, 0.24, 0.08, 0.09);
+    solido(dientes, 0.82, 0.78, 0.74);
+  }
+}
+
+// ---- Noise Reduction: calibración con 10 s de ruido + 10 s de voz -----------------
+const percentil = (v, p) => { const o = [...v].sort((a, b) => a - b); return o[Math.min(o.length - 1, Math.floor(p * (o.length - 1)))]; };
+const SEGUNDOS_CALIBRACION = 10;
+
+// Graba por la MISMA cadena que usa la sala con la reducción activa (filtros de voz), en
+// trozos iguales a los de la detección, para que el umbral calibrado sea comparable.
+async function grabarFase(nivel, progreso) {
+  flujoMic = flujoMic || await pedirMicrofono();
+  const c = new AudioContext();
+  await c.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
+  const nodo = new AudioWorkletNode(c, "captura");
+  const fuente = c.createMediaStreamSource(flujoMic);
+  const [paso, bajo] = filtrosVoz(c);
+  fuente.connect(paso); bajo.connect(nodo);
+  const dbs = [], partes = [], inicio = performance.now();
+  return new Promise((resolver) => {
+    nodo.port.onmessage = (e) => {
+      const m = e.data; let suma = 0;
+      for (let i = 0; i < m.length; i++) suma += m[i] * m[i];
+      const db = 20 * Math.log10(Math.sqrt(suma / m.length) + 1e-10);
+      dbs.push(db); partes.push(m);
+      nivel.style.width = Math.max(0, Math.min(100, (db + 80) / 80 * 100)) + "%";
+      const t = (performance.now() - inicio) / 1000;
+      progreso.style.width = Math.min(100, t / SEGUNDOS_CALIBRACION * 100) + "%";
+      if (t >= SEGUNDOS_CALIBRACION) {
+        nodo.port.onmessage = null; fuente.disconnect(); nivel.style.width = "0";
+        const tasaFase = c.sampleRate; c.close();
+        resolver({ dbs, partes, tasa: tasaFase });
+      }
+    };
+  });
+}
+
+// Abre la ventana; devuelve la calibración nueva (o la anterior) o null si se cancela
+function abrirCalibracion() {
+  const d = $("ruido");
+  let medida = null, resultado = null;
+  for (const id of ["res1", "res2"]) $(id).textContent = "";
+  for (const id of ["prog1", "prog2"]) $(id).style.width = "0";
+  $("fase2").setAttribute("aria-disabled", "true");
+  $("grabarRuido").disabled = false; $("grabarVoz").disabled = true; $("guardarRuido").disabled = true;
+  $("veredicto").hidden = true;
+  $("usarAnterior").hidden = !nr.calibracion;
+  const veredicto = (clase, texto) => { const v = $("veredicto"); v.hidden = false; v.className = "veredicto " + clase; v.textContent = texto; };
+
+  $("grabarRuido").onclick = async () => {
+    $("grabarRuido").disabled = $("grabarVoz").disabled = $("guardarRuido").disabled = true;
+    $("veredicto").hidden = true; $("res1").textContent = "Grabando… no hables.";
+    calibrando = true;
+    try {
+      const r = await grabarFase($("nivel1"), $("prog1"));
+      const ruido_db = percentil(r.dbs, 0.9);
+      medida = { ruido_db, perfil: perfilRuido(a16k(r.partes, r.tasa)) };
+      $("res1").textContent = `Ruido de la sala: ${ruido_db.toFixed(0)} dB.`;
+      $("fase2").setAttribute("aria-disabled", "false");
+      $("grabarVoz").disabled = false;
+    } catch (e) { $("res1").textContent = "No se pudo grabar: " + e.message; }
+    finally { calibrando = false; $("grabarRuido").disabled = false; $("grabarRuido").textContent = "Repetir silencio"; }
+  };
+
+  $("grabarVoz").onclick = async () => {
+    $("grabarRuido").disabled = $("grabarVoz").disabled = $("guardarRuido").disabled = true;
+    $("res2").textContent = "Grabando… habla con normalidad.";
+    calibrando = true;
+    try {
+      const r = await grabarFase($("nivel2"), $("prog2"));
+      const voz = r.dbs.filter((db) => db > medida.ruido_db + 3);
+      if (voz.length < 0.15 * r.dbs.length) {
+        $("res2").textContent = "No se detectó tu voz por encima del ruido.";
+        veredicto("mala", "Acércate al micrófono y repite la grabación de voz.");
+        return;
+      }
+      const voz_db = percentil(voz, 0.5), margen_db = voz_db - medida.ruido_db;
+      resultado = {
+        ruido_db: +medida.ruido_db.toFixed(2), voz_db: +voz_db.toFixed(2),
+        umbral_db: +(medida.ruido_db + Math.max(3, 0.45 * margen_db)).toFixed(2),
+        margen_db: +margen_db.toFixed(2), perfil: medida.perfil, fecha: new Date().toISOString(),
+      };
+      $("res2").textContent = `Tu voz: ${voz_db.toFixed(0)} dB · diferencia con el ruido: ${margen_db.toFixed(0)} dB.`;
+      if (margen_db >= 15) veredicto("buena", "Calibración buena: tu voz se distingue con claridad del ruido de la sala.");
+      else if (margen_db >= 8) veredicto("aceptable", "Calibración aceptable. Si falla, acércate al micrófono.");
+      else veredicto("mala", "Poca diferencia entre tu voz y el ruido: acércate al micrófono o usa uno con cancelación de ruido. Puedes guardarla igualmente.");
+      $("guardarRuido").disabled = false;
+    } catch (e) { $("res2").textContent = "No se pudo grabar: " + e.message; }
+    finally { calibrando = false; $("grabarRuido").disabled = false; $("grabarVoz").disabled = false; $("grabarVoz").textContent = "Repetir voz"; }
+  };
+
+  return new Promise((resolver) => {
+    let elegido = null;
+    $("guardarRuido").onclick = () => { elegido = resultado; d.close("ok"); };
+    $("usarAnterior").onclick = () => { elegido = nr.calibracion; d.close("ok"); };
+    d.addEventListener("close", () => { calibrando = false; resolver(elegido); }, { once: true });
+    $("grabarRuido").textContent = "Grabar silencio"; $("grabarVoz").textContent = "Grabar voz";
+    d.showModal();
+  });
+}
+
+function pintarRuido() {
+  for (const id of ["usarRuido", "salaRuido"]) $(id).setAttribute("aria-checked", String(nr.activo));
+  const c = nr.calibracion;
+  $("calibrarEntrada").hidden = !c;
+  $("salaRuidoInfo").textContent = c
+    ? `Ruido ${c.ruido_db.toFixed(0)} dB · voz ${c.voz_db.toFixed(0)} dB · margen ${c.margen_db.toFixed(0)} dB`
+    : "Sin calibrar";
+  $("usarRuido").title = c ? `Calibrado: margen de ${c.margen_db.toFixed(0)} dB entre tu voz y el ruido`
+                           : "Filtra el ruido de la sala y solo envía la voz intencional (requiere calibrar)";
+}
+// Activar siempre abre la calibración (con «Usar la anterior» si ya hay una); apagar vuelve
+// al funcionamiento normal del micrófono, tal cual.
+async function alternarRuido(enSala) {
+  if (nr.activo) nr = { ...nr, activo: false };
+  else {
+    const cal = await abrirCalibracion();
+    if (!cal) return;
+    nr = { activo: true, calibracion: cal };
+  }
+  pintarRuido();
+  if (enSala) { conectarMic(); try { await guardarSala({ reduccion_ruido: nr }); } catch (e) { fallo(e.message); } }
+}
+async function recalibrar(enSala) {
+  const cal = await abrirCalibracion();
+  if (!cal) return;
+  nr = { activo: true, calibracion: cal };
+  pintarRuido();
+  if (enSala) { conectarMic(); try { await guardarSala({ reduccion_ruido: nr }); } catch (e) { fallo(e.message); } }
+}
+$("usarRuido").onclick = () => alternarRuido(false);
+$("calibrarEntrada").onclick = () => recalibrar(false);
+$("salaRuido").onclick = () => alternarRuido(true);
+$("salaCalibrar").onclick = () => recalibrar(true);
 </script>
 </body>
 </html>
