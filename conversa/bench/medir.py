@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import time
 import urllib.request
@@ -35,14 +36,25 @@ def _sse(url: str):
                 yield json.loads(linea[5:])
 
 
+def _modelo_llm(url: str) -> str:
+    """En modo router (--models-dir) el campo «model» es obligatorio: el cargado o el primero."""
+    with urllib.request.urlopen(f"{url}/v1/models", timeout=10) as r:
+        modelos = json.loads(r.read()).get("data") or []
+    cargado = [m["id"] for m in modelos if (m.get("status") or {}).get("value") == "loaded"]
+    return (cargado or [m["id"] for m in modelos] or [""])[0]
+
+
 def medir_llm(url: str, n: int) -> None:
     pregunta = "¿A qué hora abren los sábados y hacen envíos a domicilio?"
+    modelo = os.environ.get("MEDIR_LLM_MODELO") or _modelo_llm(url)
+    print(f"LLM  modelo: {modelo}")
     primeros, velocidades = [], []
     for _ in range(n):
         inicio = time.time()
         primero = None
         tokens = 0
         r = urllib.request.Request(f"{url}/v1/chat/completions", json.dumps({
+            **({"model": modelo} if modelo else {}),
             "messages": [{"role": "user", "content": pregunta}], "stream": True,
             "max_tokens": 300, "chat_template_kwargs": {"enable_thinking": False},
         }).encode(), {"Content-Type": "application/json"})
