@@ -384,6 +384,62 @@ tema de la app.
 
 ---
 
+## 🗣️ Conversación por voz con el avatar
+
+Web en **http://localhost:9090** (`clonar-voz-conversa`). Primero aparece una pantalla de
+entrada (estilo «unirse a la reunión»): avatar, vídeo animado sí/no, micrófono o solo texto,
+**Configuración personalizada** (un modelo por función: STT, LLM, TTS y animación) y, en
+**Ajustes adicionales**, la salida de audio. Al pulsar **Entrar a la sala** se valida y se
+guarda en SQLite (`datos/conversa/conversa.sqlite3`): es la configuración por defecto la
+próxima vez; la primera vez se propone lo primero disponible. Las listas salen de lo que
+hay en el equipo (`modelos-stt/`, `modelos-llm/`, `modelo/`), así que el mismo código ofrece
+modelos pequeños en desarrollo y grandes en el DGX Spark. En la sala, en cada turno
+micrófono → Whisper → conocimiento → Qwen3.5 2B (streaming) → clips de voz (y vídeo
+animado, si se elige) que se reproducen en orden sobre un bucle de reposo.
+
+| Servicio | IP | Qué hace |
+|---|---|---|
+| `clonar-voz-stt` | .16 | whisper.cpp, español (`modelos-stt/ggml-small.bin`) |
+| `clonar-voz-llm` | .17 | llama-server (modo router: todos los `.gguf` de `modelos-llm/`); también segmenta emociones para el backend |
+| `clonar-voz-conversa` | .18 | web + orquestador (`conversa/app.py`), puerto 9090 |
+
+**Dos equipos, dos ramas:**
+
+- **`main` — desarrollo (GTX 1650, 4 GB):** todo en **CPU** con modelos ligeros:
+  Whisper `ggml-small`, Qwen3.5 2B (llama-server en modo router, `--models-dir`) y
+  Qwen3-TTS **0.6B** (`TTS_MODELO`, `TTS_MMPROJ`, `TTS_DISPOSITIVO=cpu`). SadTalker también
+  en CPU (`ANIMADOR_DISPOSITIVO=cpu`): el bucle de reposo tarda ~13 min la primera vez por
+  avatar y el vídeo animado es muy lento, así que por defecto la sala va en «solo audio»
+  (~15 s por turno). Así no depende de la VRAM que dejen libre otros proyectos.
+- **`gb10` — producción (DGX Spark):** todo en GPU (CUDA 13, ARM64, sm_121), Whisper
+  large-v3-turbo y 3 clips en paralelo.
+
+El conocimiento viene del RAG de **SecondBrain** (Ollama `:11434` + ChromaDB `:8100` en
+el host). Si no está en marcha, se usan los `.md`/`.txt` de `conversa/demo/`
+(`CONVERSA_DIR_CONOCIMIENTO`). `/api/salud` indica cuál se usa.
+
+Primera vez en el equipo de desarrollo:
+
+```bash
+mkdir -p modelos-stt && curl -L -o modelos-stt/ggml-small.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+docker compose up -d --build
+curl localhost:9090/api/salud
+```
+
+TTS 0.6B (formato llama.cpp, con su mmproj; se usan los nombres que espera el backend):
+
+```bash
+B=https://huggingface.co/mradermacher/Qwen3-TTS-12Hz-0.6B-Base-GGUF/resolve/main
+curl -L -o modelo/Qwen3-TTS-12Hz-0.6B-Base-Q4_K_M.gguf $B/Qwen3-TTS-12Hz-0.6B-Base.Q4_K_M.gguf
+curl -L -o modelo/mmproj-Qwen3-TTS-12Hz-0.6B-Base-Q8_0.gguf $B/Qwen3-TTS-12Hz-0.6B-Base.mmproj-Q8_0.gguf
+```
+
+Variables opcionales (vacías = comportamiento anterior, como en el DGX Spark):
+`CLONAR_TTS_MODELO`, `CLONAR_TTS_MMPROJ`, `CLONAR_TTS_DISPOSITIVO` (backend) y
+`ANIMADOR_DISPOSITIVO` (animador). `/api/generar` acepta `modelo_tts` y
+`/api/modelo/disponibles` lista los TTS con su mmproj.
+
 ## 🧱 Arquitectura
 
 ```

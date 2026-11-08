@@ -23,9 +23,19 @@ services:
       - CLONAR_CONFIG=/app/config/config.json
       - CLONAR_DIR_AVATARES=/app/avatares
       - CLONAR_DIR_VIDEOS=/app/videos
-      # LLM bajo demanda: el backend lo carga solo mientras etiqueta emociones
+      # LLM compartido con la conversación (clonar-voz-llm, en CPU: no ocupa VRAM).
+      # Si se quita CLONAR_LLM_URL, el backend vuelve a cargarlo bajo demanda.
+      - CLONAR_LLM_URL=http://clonar-voz-llm:8080
       - CLONAR_LLM_MODELO=/app/modelos-llm/Qwen3.5-2B-Q4_K_M.gguf
       - CLONAR_LLM_HILOS=6
+      # GTX 1650: una sola tarea en la GPU a la vez (TTS o animación, nunca ambas)
+      - CLONAR_GPU_CONCURRENCIA=1
+      # Modelos y dispositivo del TTS por equipo (vacío = config.json o autodetección).
+      # Desarrollo: Qwen3-TTS 0.6B en CPU (~1,8x tiempo real, sin VRAM). En el GB10 se
+      # dejan vacíos o se apuntan a los modelos grandes (Q8_0/BF16 en GPU).
+      - CLONAR_TTS_MODELO=${TTS_MODELO:-/app/modelo/Qwen3-TTS-12Hz-0.6B-Base-Q4_K_M.gguf}
+      - CLONAR_TTS_MMPROJ=${TTS_MMPROJ:-/app/modelo/mmproj-Qwen3-TTS-12Hz-0.6B-Base-Q8_0.gguf}
+      - CLONAR_TTS_DISPOSITIVO=${TTS_DISPOSITIVO:-cpu}
       - CLONAR_ANIMADOR_URL=http://clonar-voz-animador:8080
       - CLONAR_MONGO_URL=mongodb://clonar-voz-mongo:27017
       - CLONAR_DIR_ANIMACION=/app/animacion
@@ -84,6 +94,9 @@ services:
       - ./modelos-animacion:/modelos:ro   # pesos de SadTalker (fuera del repo y de la imagen)
       - ./cache/animacion:/trabajo         # área de trabajo compartida con el backend
     environment:
+      - ANIMADOR_CONCURRENCIA=1            # GTX 1650: una animación a la vez
+      # gpu | cpu. En CPU es lento (minutos por clip), pero no depende de la VRAM libre
+      - ANIMADOR_DISPOSITIVO=${ANIMADOR_DISPOSITIVO:-cpu}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:
@@ -136,6 +149,96 @@ services:
     networks:
       clonar-voz-net:
         ipv4_address: 192.168.93.11
+    restart: unless-stopped
+
+  # ---- Conversación por voz con el avatar (puerto 9090) --------------------------
+  # Equipo de desarrollo (GTX 1650, 4 GB): STT y LLM corren en CPU para dejar la VRAM
+  # a Qwen3-TTS y SadTalker, que se turnan en la GPU. En producción (DGX Spark / GB10)
+  # se usa la rama `gb10`, con todo en GPU y clips en paralelo.
+
+  clonar-voz-stt:
+    # Speech-to-text en español: whisper.cpp en CPU (modelo pequeño)
+    build: ./stt
+    image: clonar-voz-stt:cpu
+    container_name: clonar-voz-stt
+    user: "1000:1000"
+    volumes:
+      - ./modelos-stt:/modelos:ro
+    command: ["whisper-server", "-m", "/modelos/${STT_MODELO:-ggml-small.bin}",
+              "-l", "es", "--host", "0.0.0.0", "--port", "8080", "-t", "${STT_HILOS:-4}"]
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.16
+    restart: unless-stopped
+
+  clonar-voz-llm:
+    # llama-server en CPU (sin VRAM) en modo router: ofrece todos los .gguf de
+    # ./modelos-llm y carga el que pide cada petición (uno a la vez, ~1,5 GB de RAM el 2B).
+    # Redacta las respuestas de la conversación y segmenta por emociones para el backend.
+    # Usa la imagen del backend (mismo llama.cpp).
+    image: clonar-voz-backend:cuda
+    pull_policy: never
+    container_name: clonar-voz-llm
+    user: "1000:1000"
+    volumes:
+      - ./modelos-llm:/modelos:ro
+    command: ["/opt/llama.cpp/llama-server", "--models-dir", "/modelos", "--models-max", "1",
+              "--host", "0.0.0.0", "--port", "8080", "--device", "none", "-ngl", "0",
+              "-t", "${LLM_HILOS:-6}", "-c", "${LLM_CONTEXTO:-8192}", "-np", "${LLM_PARALELO:-2}",
+              "--jinja"]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.17
+    restart: unless-stopped
+
+  clonar-voz-conversa:
+    # Web del asistente por voz (solo el avatar) y orquestación del pipeline
+    #   micrófono → STT → RAG (SecondBrain, o documentos locales) → LLM → clips de voz/vídeo
+    build: ./conversa
+    image: clonar-voz-conversa:latest
+    container_name: clonar-voz-conversa
+    user: "1000:1000"
+    ports:
+      - "9090:8080"
+    volumes:
+      - ./videos:/videos:ro                # MP4 que genera el backend
+      - ./audios/generados:/audios:ro      # WAV del modo «solo audio»
+      - ./datos/conversa:/datos            # registro del bucle de reposo
+      - ./conversa/demo:/conocimiento:ro   # respaldo si SecondBrain no está en marcha
+      - ./modelos-stt:/modelos-stt:ro      # para ofrecer los modelos de Whisper en la web
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Ollama y ChromaDB de SecondBrain
+    environment:
+      # El avatar y los modelos se eligen en la web («Entrar a la sala») y se guardan en
+      # ./datos/conversa/conversa.sqlite3. La primera vez: lo primero disponible.
+      - CONVERSA_ESCENA=noche              # fondo preferido del avatar
+      - CONVERSA_STT_MODELO=${STT_MODELO:-ggml-small.bin}   # el que carga whisper-server
+      - CONVERSA_MAX_PALABRAS=260          # ≈ 2 minutos de voz
+      # GTX 1650: la GPU se usa en serie; clips más largos amortizan cada arranque
+      - CONVERSA_CLIPS_EN_PARALELO=1
+      - CONVERSA_PALABRAS_PRIMER_CLIP=8
+      - CONVERSA_PALABRAS_CLIP=35
+      - CONVERSA_VIDEO=0                   # la primera vez: vídeo desactivado (lento en la 1650)
+      - CONVERSA_RELLENO=1                 # «Déjame pensarlo, te respondo en breve.»
+      - CONVERSA_OLLAMA_URL=http://host.docker.internal:11434
+      - CONVERSA_CHROMA_URL=http://host.docker.internal:8100
+      - CONVERSA_DIR_CONOCIMIENTO=/conocimiento
+    depends_on:
+      clonar-voz-backend:
+        condition: service_healthy
+      clonar-voz-llm:
+        condition: service_healthy
+      clonar-voz-stt:
+        condition: service_started
+    networks:
+      clonar-voz-net:
+        ipv4_address: 192.168.93.18
     restart: unless-stopped
 
 networks:

@@ -23,6 +23,7 @@ nunca hay dos modelos en memoria a la vez.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -117,6 +118,12 @@ class ServicioGeneracion:
         cfg = self._config.cargar()
         cfg.update({k: v for k, v in ajustes.items()
                     if k in AJUSTES_POR_PETICION and v not in (None, "")})
+        if archivo := ajustes.get("modelo_tts"):
+            # Modelo elegido para esta petición (p. ej. desde la web de conversación)
+            par = self._entorno.modelo_tts(str(archivo))
+            if par is None:
+                raise PeticionInvalida(f"No existe el modelo TTS «{archivo}» (o le falta su mmproj).")
+            cfg["modelo"], cfg["mmproj"] = par["modelo"], par["mmproj"]
         return cfg
 
     def _hablante(self, voz: str | None, avatar: str | None, con_video: bool,
@@ -164,6 +171,9 @@ class ServicioGeneracion:
             raise PeticionInvalida("Tu llama.cpp no admite Qwen3-TTS (falta --mmproj en "
                                    "llama-tts). Actualízalo: winget upgrade ggml.llamacpp")
         modo_disp = str(dispositivo or cfg.get("dispositivo") or "auto")
+        if modo_disp == "auto":
+            # Cada equipo puede fijar su preferencia (p. ej. «cpu» en una GPU de 4 GB)
+            modo_disp = os.environ.get("CLONAR_TTS_DISPOSITIVO") or "auto"
         if modo_disp == "cpu":
             return rutas, ""
         if modo_disp == "auto":

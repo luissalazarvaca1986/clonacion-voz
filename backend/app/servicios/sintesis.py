@@ -17,6 +17,7 @@ reenvía al navegador por SSE:
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import shutil
 import subprocess
@@ -227,9 +228,11 @@ class GestorTareas:
         self._vida = vida_segundos
         self._tareas: dict[str, Tarea] = {}
         self._cerrojo_tareas = threading.Lock()
-        # Solo una síntesis a la vez: dos procesos llama-tts simultáneos duplican el
-        # consumo de VRAM y agotan las gráficas pequeñas.
-        self._cerrojo_sintesis = threading.Lock()
+        # Por defecto, una síntesis a la vez: dos procesos llama-tts simultáneos duplican
+        # el consumo de VRAM y agotan las gráficas pequeñas. En equipos con memoria de
+        # sobra CLONAR_GPU_CONCURRENCIA permite varias tareas en paralelo (pipeline).
+        self._cerrojo_sintesis = threading.BoundedSemaphore(
+            max(1, int(os.environ.get("CLONAR_GPU_CONCURRENCIA") or 1)))
 
     @staticmethod
     def nuevo_id() -> str:
@@ -342,10 +345,13 @@ class GestorTareas:
             piezas = planificar(tarea)
             if not piezas:
                 raise RuntimeError("No hay texto que sintetizar.")
-            if not self._cerrojo_sintesis.acquire(blocking=False):
-                tarea.emitir("log", linea="Hay otra síntesis en curso; esperando turno…")
-                self._cerrojo_sintesis.acquire()
-            cerrojo_tomado = True
+            # El cerrojo protege la memoria de la GPU. Una síntesis solo de voz en CPU
+            # (sin vídeo, que podría animar en la GPU) no la usa: no espera su turno.
+            if dispositivo or destino_video is not None:
+                if not self._cerrojo_sintesis.acquire(blocking=False):
+                    tarea.emitir("log", linea="Hay otra síntesis en curso; esperando turno…")
+                    self._cerrojo_sintesis.acquire()
+                cerrojo_tomado = True
             tarea.fase = "procesando"
             log.info("Tarea %s: %d pieza(s) en %s", tarea.id, len(piezas), dispositivo or "CPU")
 

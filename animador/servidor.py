@@ -31,8 +31,20 @@ MODELOS = Path(os.environ.get("ANIMADOR_MODELOS", "/modelos"))
 SADTALKER = Path("/opt/sadtalker")
 TIMEOUT = int(os.environ.get("ANIMADOR_TIMEOUT", "3600"))
 PUERTO = int(os.environ.get("ANIMADOR_PUERTO", "8080"))
+# Dispositivo si la petición no lo indica: «gpu» (por defecto) o «cpu» (GPU sin memoria libre)
+DISPOSITIVO = os.environ.get("ANIMADOR_DISPOSITIVO", "gpu")
 
-CERROJO = threading.Lock()
+# Animaciones simultáneas: 1 en GPUs pequeñas; más en equipos con memoria de sobra
+# (cada una es un proceso SadTalker independiente que libera su memoria al terminar)
+CONCURRENCIA = max(1, int(os.environ.get("ANIMADOR_CONCURRENCIA", "1")))
+CERROJO = threading.BoundedSemaphore(CONCURRENCIA)
+_activas = [0]
+_cuenta = threading.Lock()
+
+
+def _ocupado():
+    with _cuenta:
+        return _activas[0] >= CONCURRENCIA
 _PATRON_OOM = re.compile(r"CUDA out of memory|CUBLAS_STATUS_ALLOC_FAILED|out of memory", re.I)
 
 CAPACIDADES = {
@@ -89,7 +101,7 @@ def _comando(p, imagen, audio, resultados):
            "--batch_size", "1"]   # lote 1: el mínimo de VRAM en 4 GB
     if p.get("quieto", True):
         cmd.append("--still")
-    if p.get("dispositivo") == "cpu" or not _hay_gpu():
+    if (p.get("dispositivo") or DISPOSITIVO) == "cpu" or not _hay_gpu():
         cmd.append("--cpu")
     return cmd
 
@@ -110,7 +122,7 @@ class Manejador(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/salud":
-            self._json(200, {"ok": True, "gpu": _hay_gpu(), "ocupado": CERROJO.locked()})
+            self._json(200, {"ok": True, "gpu": _hay_gpu(), "ocupado": _ocupado(), "concurrencia": CONCURRENCIA})
         elif self.path == "/capacidades":
             self._json(200, dict(CAPACIDADES, gpu=_hay_gpu()))
         else:
@@ -133,7 +145,9 @@ class Manejador(BaseHTTPRequestHandler):
         except (KeyError, ValueError, TypeError) as exc:
             return self._json(400, {"error": str(exc)})
         if not CERROJO.acquire(blocking=False):
-            return self._json(409, {"error": "Ya hay una animación en curso"})
+            return self._json(409, {"error": "Ya hay %d animación(es) en curso" % CONCURRENCIA})
+        with _cuenta:
+            _activas[0] += 1
 
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
@@ -188,6 +202,8 @@ class Manejador(BaseHTTPRequestHandler):
                 proceso.kill()
                 proceso.wait()
             shutil.rmtree(resultados, ignore_errors=True)
+            with _cuenta:
+                _activas[0] -= 1
             CERROJO.release()
             try:
                 self.wfile.write(b"0\r\n\r\n")
