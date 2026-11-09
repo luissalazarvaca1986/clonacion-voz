@@ -115,9 +115,25 @@ class DetectorEntorno:
         """«Qwen3-TTS-12Hz-0.6B-Base-Q4_K_M» → «qwen3-tts-12hz-0.6b-base» (sin cuantización)."""
         return re.sub(r"[-.](?:[IQ]\d\w*|bf16|f16|f32)$", "", nombre, flags=re.I).lower()
 
+    @staticmethod
+    def _cuantizacion(nombre: str) -> str:
+        """«Qwen3-TTS-12Hz-1.7B-Base-Q8_0» → «q8_0»; «…-bf16» → «bf16»; sin sufijo → «»."""
+        m = re.search(r"[-.]([IQ]\d\w*|bf16|f16|f32)$", nombre, flags=re.I)
+        return m.group(1).lower() if m else ""
+
+    @staticmethod
+    def _calidad(cuantizacion: str) -> int:
+        """Orden de calidad de una cuantización: f32 > bf16 > f16 > Q8 > … > Q2."""
+        if cuantizacion in ("f32", "bf16", "f16"):
+            return {"f32": 100, "bf16": 99, "f16": 98}[cuantizacion]
+        m = re.match(r"i?q(\d+)", cuantizacion)
+        return int(m.group(1)) if m else 0
+
     def listar_modelos_tts(self) -> list[dict[str, str]]:
         """Modelos TTS de la carpeta, cada uno con el mmproj de su mismo tamaño (con varios
-        tamaños, p. ej. 0.6B y 1.7B, se emparejan por el nombre sin la cuantización)."""
+        tamaños, p. ej. 0.6B y 1.7B, se emparejan por el nombre sin la cuantización).
+        Entre los mmproj de ese tamaño se prefiere el de la misma cuantización que el modelo
+        (BF16 con BF16) y, si no lo hay, el de mayor calidad."""
         if not self._dir_modelo.is_dir():
             return []
         ggufs = sorted(self._dir_modelo.glob("*.gguf"))
@@ -125,9 +141,13 @@ class DetectorEntorno:
         pares = []
         for modelo in (g for g in ggufs if not g.name.lower().startswith("mmproj")):
             base = self._base_modelo(modelo.stem)
-            mmproj = next((m for m in mmprojs if base in m.name.lower()), None)
-            if mmproj is None and len(mmprojs) == 1:
-                mmproj = mmprojs[0]
+            candidatos = [m for m in mmprojs if base in m.name.lower()]
+            if not candidatos and len(mmprojs) == 1:
+                candidatos = mmprojs
+            cuant = self._cuantizacion(modelo.stem)
+            mmproj = next((m for m in candidatos if self._cuantizacion(m.stem) == cuant), None)
+            if mmproj is None and candidatos:
+                mmproj = max(candidatos, key=lambda m: self._calidad(self._cuantizacion(m.stem)))
             if mmproj is not None:
                 pares.append({"id": modelo.name, "modelo": str(modelo), "mmproj": str(mmproj)})
         return pares
