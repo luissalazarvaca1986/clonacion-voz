@@ -418,12 +418,17 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const estadoEl = $("estado");
+// crypto.randomUUID solo existe en https o localhost; desde otro equipo de la red (http) se
+// arma el UUID con getRandomValues, que sí está disponible
+const nuevoId = () => crypto.randomUUID ? crypto.randomUUID()
+  : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) =>
+      (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
 const sesion = (() => {
   try {
     let s = sessionStorage.getItem("sesion");
-    if (!s) { s = crypto.randomUUID(); sessionStorage.setItem("sesion", s); }
+    if (!s) { s = nuevoId(); sessionStorage.setItem("sesion", s); }
     return s;
-  } catch { return crypto.randomUUID(); }
+  } catch { return nuevoId(); }
 })();
 const escapar = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 // ---- Vídeo animado o solo audio: lo fija la pantalla de entrada y no cambia en la sala

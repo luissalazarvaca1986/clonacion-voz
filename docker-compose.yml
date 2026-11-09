@@ -21,6 +21,9 @@ services:
       - ./cache/animacion:/app/animacion    # área de trabajo compartida con el animador
     environment:
       - CLONAR_DIR_MODELO=/app/modelo
+      # TTS por defecto (lo que la web propone la primera vez); se cambia en la web o en .env
+      - CLONAR_TTS_MODELO=${TTS_MODELO:-/app/modelo/Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf}
+      - CLONAR_TTS_MMPROJ=${TTS_MMPROJ:-/app/modelo/mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf}
       - CLONAR_DIR_VOCES=/app/audios/referencias
       - CLONAR_DIR_SALIDAS=/app/audios/generados
       - CLONAR_CONFIG=/app/config/config.json
@@ -92,6 +95,10 @@ services:
       - ./cache/animacion:/trabajo         # área de trabajo compartida con el backend
     environment:
       - ANIMADOR_CONCURRENCIA=3
+      # Render facial a 512 con mejora GFPGAN (la 1650 se queda en 256 sin mejora)
+      - ANIMADOR_TAMANOS=256,512
+      - ANIMADOR_TAMANO=${ANIMADOR_TAMANO:-512}
+      - ANIMADOR_MEJORA=${ANIMADOR_MEJORA:-gfpgan}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:

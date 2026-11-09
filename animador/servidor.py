@@ -37,6 +37,18 @@ DISPOSITIVO = os.environ.get("ANIMADOR_DISPOSITIVO", "gpu")
 # Animaciones simultáneas: 1 en GPUs pequeñas; más en equipos con memoria de sobra
 # (cada una es un proceso SadTalker independiente que libera su memoria al terminar)
 CONCURRENCIA = max(1, int(os.environ.get("ANIMADOR_CONCURRENCIA", "1")))
+
+# Resolución del render facial y mejora del rostro, por equipo: la GTX 1650 (4 GB) se queda
+# en 256 sin mejora; el DGX Spark usa 512 con GFPGAN (ANIMADOR_TAMANOS=256,512,
+# ANIMADOR_TAMANO=512, ANIMADOR_MEJORA=gfpgan en su compose)
+TAMANOS = sorted({int(t) for t in os.environ.get("ANIMADOR_TAMANOS", "256").split(",") if t.strip()})
+TAMANO = int(os.environ.get("ANIMADOR_TAMANO", str(TAMANOS[0])))
+if TAMANO not in TAMANOS:
+    TAMANOS = sorted(set(TAMANOS) | {TAMANO})
+MEJORAS = ["", "gfpgan"]
+MEJORA = os.environ.get("ANIMADOR_MEJORA", "").strip().lower()
+if MEJORA not in MEJORAS:
+    MEJORA = ""
 CERROJO = threading.BoundedSemaphore(CONCURRENCIA)
 _activas = [0]
 _cuenta = threading.Lock()
@@ -60,8 +72,10 @@ CAPACIDADES = {
         "transparencia": False,  # el MP4 sale sin canal alfa
     },
     "opciones": {
-        "tamano": {"tipo": "enum", "valores": [256], "defecto": 256,
+        "tamano": {"tipo": "enum", "valores": TAMANOS, "defecto": TAMANO,
                    "ayuda": "Resolución del render facial. 512 no cabe en 4 GB."},
+        "mejora": {"tipo": "enum", "valores": MEJORAS, "defecto": MEJORA,
+                   "ayuda": "Mejora del rostro con GFPGAN (más nítido y más lento); vacío = sin mejora."},
         "estilo_pose": {"tipo": "entero", "min": 0, "max": 45, "defecto": 0,
                         "ayuda": "Estilo de movimiento de cabeza (0-45)."},
         "escala_expresion": {"tipo": "decimal", "min": 0.0, "max": 3.0, "defecto": 1.0,
@@ -92,15 +106,23 @@ def _comando(p, imagen, audio, resultados):
     preproceso = p.get("preproceso", "full")
     if preproceso not in ("full", "crop"):
         raise ValueError("preproceso no válido")
+    tamano = int(p.get("tamano") or TAMANO)
+    if tamano not in TAMANOS:
+        raise ValueError("tamano no válido")
+    mejora = str(p.get("mejora", MEJORA) or "").lower()
+    if mejora not in MEJORAS:
+        raise ValueError("mejora no válida")
     cmd = ["python", "inference.py",
            "--driven_audio", str(audio), "--source_image", str(imagen),
            "--result_dir", str(resultados), "--checkpoint_dir", str(MODELOS / "checkpoints"),
-           "--size", "256", "--preprocess", preproceso,
+           "--size", str(tamano), "--preprocess", preproceso,
            "--pose_style", str(min(45, max(0, int(p.get("estilo_pose", 0))))),
            "--expression_scale", "%.2f" % min(3.0, max(0.0, float(p.get("escala_expresion", 1.0)))),
            "--batch_size", "1"]   # lote 1: el mínimo de VRAM en 4 GB
     if p.get("quieto", True):
         cmd.append("--still")
+    if mejora:
+        cmd += ["--enhancer", mejora]
     if (p.get("dispositivo") or DISPOSITIVO) == "cpu" or not _hay_gpu():
         cmd.append("--cpu")
     return cmd

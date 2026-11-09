@@ -153,3 +153,15 @@ curl -s localhost:9090/api/opciones | python3 -m json.tool
 - Commit en `gb10` con la autoría del usuario (Luis Alfonso Salazar Vaca), en español.
 - Si corriges código de la app (no de la infraestructura), llévalo también a `main` para
   que las dos ramas sigan con el mismo código.
+
+## Estado al 9-nov-2026 (DGX Spark, rama `gb10`)
+
+1. **LLM en modo router: OK.** `/v1/models` muestra `--n-gpu-layers 999` y `--flash-attn on`; `/health` = ok; CUDA 13.0.1.
+2. **Whisper `/load` en GPU: OK** (CUDA0, 1,6 GB, 0,3 s). Solo hay `ggml-large-v3-turbo.bin`; falta descargar `ggml-large-v3.bin` para probar el cambio entre modelos.
+3. **TTS y mmproj: corregido** (`entorno.py`). Se prefiere el mmproj de la misma cuantización y, si no hay, el de mayor calidad: Q8_0→Q8_0, BF16→BF16, Q4_K_M→BF16. El compose de `gb10` expone `TTS_MODELO`/`TTS_MMPROJ` con Q8_0 por defecto.
+4. **Primera entrada con vídeo: OK** (ya existía `reposo-Luisa-noche.json`; `/api/salud` → `reposo: true`).
+5. **Benchmarks** (`medir.py`): LLM 28 ms al primer token y 129 tokens/s; TTS Q8_0 factor 0,51–0,55×; turno completo 7,5 s para 9,5 s de respuesta. TTS por cuantización (mediana de 3): Q4_K_M 0,69×, **Q8_0 0,59×**, BF16 0,75× → Q8_0 por defecto. `simulador.py` sigue desfasado (no se tocó).
+6. **SadTalker configurable** (`animador/servidor.py`): `ANIMADOR_TAMANOS`, `ANIMADOR_TAMANO` y `ANIMADOR_MEJORA` (por defecto 256 sin mejora; en `gb10`, 512 con GFPGAN). Medido en el GB10 con 7 s de audio: 512+GFPGAN ≈ 125 s (salida 1024×1024); 256 sin mejora 33 s.
+7. **Prueba en Chrome:** desde otro equipo de la red (http://IP:9090) la web se quedaba en «Cargando…» porque `crypto.randomUUID` solo existe en https/localhost. Corregido en `conversa/static/index.html` con un respaldo de `getRandomValues`. Entrada → sala → turno por texto con Luisa (noche, simulación): OK, turno de 8,2 s; la configuración persiste. **Pendiente:** micrófono y Noise Reduction (requieren https o localhost: probar en el propio Spark o servir la web con https), los otros fondos, Luis y el engranaje. Detalle visual: el botón de pantalla completa se monta sobre la etiqueta con el nombre del avatar.
+8. **`herramientas/rostro.py` en el GB10: OK** (Python 3.10, torch 2.9.1+cu130): da los mismos 98 puntos de Luisa que el archivo versionado (diferencia 0,00 px).
+9. **Noise Reduction:** pendiente de probar con micrófono (ver 7).
