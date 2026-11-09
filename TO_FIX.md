@@ -165,3 +165,18 @@ curl -s localhost:9090/api/opciones | python3 -m json.tool
 7. **Prueba en Chrome:** desde otro equipo de la red (http://IP:9090) la web se quedaba en «Cargando…» porque `crypto.randomUUID` solo existe en https/localhost. Corregido en `conversa/static/index.html` con un respaldo de `getRandomValues`. Entrada → sala → turno por texto con Luisa (noche, simulación): OK, turno de 8,2 s; la configuración persiste. **Pendiente:** micrófono y Noise Reduction (requieren https o localhost: probar en el propio Spark o servir la web con https), los otros fondos, Luis y el engranaje. Detalle visual: el botón de pantalla completa se monta sobre la etiqueta con el nombre del avatar.
 8. **`herramientas/rostro.py` en el GB10: OK** (Python 3.10, torch 2.9.1+cu130): da los mismos 98 puntos de Luisa que el archivo versionado (diferencia 0,00 px).
 9. **Noise Reduction:** pendiente de probar con micrófono (ver 7).
+
+## Pendiente nuevo (9-nov-2026): el historial contamina las respuestas
+
+Probado por voz en la sala con Luisa y el conocimiento del SecondBrain:
+
+- En una sesión nueva responde bien («¿Qué es SentinelOne?», «¿Qué es NinjaOne?»), con las fuentes correctas.
+- En la **misma sesión**, la pregunta siguiente se contesta sobre el tema anterior: tras preguntar por SentinelOne, «¿Qué es NinjaOne?» respondió «SentinelOne es…»; y tras una respuesta errónea sobre Rattio, «¿Qué es SentinelOne?» empezó con «Rattio no es SentinelOne…».
+- Causa probable: `conversa/app.py` mete los últimos `HISTORIAL_TURNOS = 4` turnos (8 mensajes) junto al contexto recuperado, y el Qwen3.5 2B se deja arrastrar por el historial.
+
+Opciones, de menor a mayor esfuerzo (medir con `medir.py turno` y probar en la sala):
+1. Bajar `HISTORIAL_TURNOS` (1 o 2) o hacerlo configurable por entorno (`CONVERSA_HISTORIAL_TURNOS`), para no romper la 1650.
+2. En el prompt, poner la pregunta actual y su contexto **después** del historial e indicar que se responda solo a la última pregunta con ese contexto.
+3. Usar un LLM más grande en el Spark (en `modelos-llm/` solo hay Qwen3.5-2B-Q4_K_M; hay memoria para 30B o más) y dejar el 2B para la 1650.
+
+Además: «¿Qué es Rattio?» responde mal («plataforma de gestión de identidad») porque la búsqueda no trae la colección `rattio`; Juan Carlos va a cargar un `.md` de Rattio nuevo.
