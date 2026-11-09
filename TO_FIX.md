@@ -180,3 +180,16 @@ Opciones, de menor a mayor esfuerzo (medir con `medir.py turno` y probar en la s
 3. Usar un LLM más grande en el Spark (en `modelos-llm/` solo hay Qwen3.5-2B-Q4_K_M; hay memoria para 30B o más) y dejar el 2B para la 1650.
 
 Además: «¿Qué es Rattio?» responde mal («plataforma de gestión de identidad») porque la búsqueda no trae la colección `rattio`; Juan Carlos va a cargar un `.md` de Rattio nuevo.
+
+### Corregido el 9-nov-2026 (rama `gb10`, llevado a `main`)
+
+Diagnóstico: los documentos **no** estaban mal clasificados (cada colección de producto solo tiene lo suyo), pero el mismo documento está copiado en varias colecciones (`rattio` tiene los 1.032 fragmentos de todo, más `conocimiento`, `plan_marketing_2027`, `estrategia`). La búsqueda tomaba los 6 más cercanos de todas: llegaban 2 textos distintos repetidos 3 veces, a veces de la sección «cómo encaja con el resto del portafolio», y el historial arrastraba el tema anterior.
+
+Cambios en `conversa/app.py`:
+1. Deduplicación de fragmentos por texto y 18 candidatos por colección, para que lleguen 6 distintos.
+2. `elegir_fragmentos`: si la pregunta nombra productos (por el prefijo del nombre del documento, p. ej. «NinjaOne - …»), solo fragmentos de esos productos, repartidos entre ellos.
+3. Cada fragmento va etiquetado con su producto y el prompt pide no mezclar productos y responder solo la pregunta actual.
+4. `CONVERSA_HISTORIAL_TURNOS` (por defecto 2) y **sin historial cuando la pregunta nombra un producto** (se entiende sola); las preguntas de seguimiento («¿y con qué se complementa?») siguen usando el historial.
+
+Pruebas: `conversa/bench/pruebas_conocimiento.py` (11 productos, 2 preguntas dobles y una secuencia de 5 en la misma sesión). Antes: falló la pregunta doble y, de forma intermitente, la secuencia («¿Qué es NinjaOne?» → «SentinelOne es…»). Después: **18/18 en dos corridas**, seguimiento correcto y prueba en Chrome por la red OK (NinjaOne → Prompt Security → los dos, en la misma sesión).
+Pendiente: no hay documento que describa a Rattio como empresa; Juan Carlos cargará un `.md`. Ojo: el set de pruebas genera vídeo en cada turno y llena la cola de clips; correrlo con la sala sin uso.

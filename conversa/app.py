@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 import uuid
 import wave
 from dataclasses import dataclass, field
@@ -63,7 +64,8 @@ DIR_AUDIOS = Path(os.getenv("CONVERSA_DIR_AUDIOS", "/audios"))
 DIR_DATOS = Path(os.getenv("CONVERSA_DIR_DATOS", "/datos"))
 # Documentos de respaldo cuando SecondBrain (Ollama + ChromaDB) no está en marcha
 DIR_CONOCIMIENTO = Path(os.getenv("CONVERSA_DIR_CONOCIMIENTO", "/conocimiento"))
-HISTORIAL_TURNOS = 4
+# Turnos previos que ve el LLM: pocos, para que no arrastre el tema anterior
+HISTORIAL_TURNOS = int(os.getenv("CONVERSA_HISTORIAL_TURNOS", "2"))
 CHROMA_BASE = "/api/v2/tenants/default_tenant/databases/default_database"
 
 # Frases que Whisper «oye» en el silencio o el ruido
@@ -81,7 +83,12 @@ Reglas:
   Nada de listas, viñetas, asteriscos, tablas, emojis, enlaces ni formato markdown.
 - Empieza con una frase breve que responda directamente; después amplía si hace falta.
 - Sé breve: entre una y cinco frases suele bastar. Nunca superes {max_palabras} palabras.
-- No menciones la «información de referencia», los «documentos» ni que eres un modelo."""
+- No menciones la «información de referencia», los «documentos» ni que eres un modelo.
+- Responde SOLO la PREGUNTA actual. La conversación anterior sirve únicamente para entender
+  referencias como «eso» o «y él»; no repitas ni continúes el tema anterior.
+- Cada fragmento de referencia indica de qué producto habla. Describe cada producto solo con
+  sus propios fragmentos y no le atribuyas lo que se dice de otro. Si preguntan por varios
+  productos, responde cada uno por separado, empezando por su nombre."""
 
 
 # ---- Perfil de la sala: avatar y modelos elegidos en «Entrar a la sala» --------
@@ -258,7 +265,7 @@ async def buscar_secondbrain(cliente: httpx.AsyncClient, pregunta: str) -> list[
         try:
             q = await cliente.post(
                 f"{CHROMA_URL}{CHROMA_BASE}/collections/{col['id']}/query",
-                json={"query_embeddings": [vector], "n_results": FRAGMENTOS,
+                json={"query_embeddings": [vector], "n_results": FRAGMENTOS * 3,
                       "include": ["documents", "metadatas", "distances"]}, timeout=15)
             q.raise_for_status()
             return q.json()
@@ -266,17 +273,49 @@ async def buscar_secondbrain(cliente: httpx.AsyncClient, pregunta: str) -> list[
             log.warning("Colección %s: %s", col.get("name"), e)
             return None
 
+    # El mismo documento suele estar en varias colecciones (la del producto, «rattio»,
+    # «plan_marketing_2027»…): se deduplica por el texto para que lleguen fragmentos distintos
     mejores: dict[str, dict[str, Any]] = {}
     for datos in await asyncio.gather(*(consultar(c) for c in r.json())):
         if not datos:
             continue
-        for i, id_trozo in enumerate(datos["ids"][0]):
+        for i, texto in enumerate(datos["documents"][0]):
             distancia = datos["distances"][0][i]
-            if id_trozo not in mejores or distancia < mejores[id_trozo]["distancia"]:
+            clave = hashlib.sha1(" ".join(texto.split()).encode()).hexdigest()
+            if clave not in mejores or distancia < mejores[clave]["distancia"]:
                 meta = datos["metadatas"][0][i] or {}
-                mejores[id_trozo] = {"texto": datos["documents"][0][i], "distancia": distancia,
-                                     "documento": meta.get("nombre", "")}
-    return sorted(mejores.values(), key=lambda m: m["distancia"])[:FRAGMENTOS]
+                mejores[clave] = {"texto": texto, "distancia": distancia,
+                                  "documento": meta.get("nombre", "")}
+    return elegir_fragmentos(pregunta, sorted(mejores.values(), key=lambda m: m["distancia"]))
+
+
+def _clave(texto: str) -> str:
+    """«Prompt Security» → «promptsecurity»: minúsculas, sin tildes ni espacios."""
+    t = unicodedata.normalize("NFD", texto.lower())
+    return re.sub(r"[^a-z0-9]", "", "".join(c for c in t if unicodedata.category(c) != "Mn"))
+
+
+def producto_de(documento: str) -> str:
+    """El producto de un documento de SecondBrain: «NinjaOne - SB NinjaOne - …» → «NinjaOne»."""
+    return documento.split(" - ")[0].strip() if " - " in documento else ""
+
+
+def elegir_fragmentos(pregunta: str, candidatos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Si la pregunta nombra productos, solo fragmentos de esos productos, repartidos entre
+    ellos (así no se mezclan conceptos de otros); si no nombra ninguno, los más cercanos."""
+    q = _clave(pregunta)
+    productos = {producto_de(c["documento"]) for c in candidatos} - {""}
+    nombrados = sorted((p for p in productos if _clave(p) and _clave(p) in q),
+                       key=lambda p: q.index(_clave(p)))
+    if not nombrados:
+        return candidatos[:FRAGMENTOS]
+    cupo = max(2, FRAGMENTOS // len(nombrados))
+    elegidos: list[dict[str, Any]] = []
+    for p in nombrados:
+        elegidos += [c for c in candidatos if producto_de(c["documento"]) == p][:cupo]
+    resto = [c for c in candidatos if c not in elegidos and producto_de(c["documento"]) in nombrados]
+    elegidos += resto[:max(0, FRAGMENTOS - len(elegidos))]
+    return elegidos or candidatos[:FRAGMENTOS]
 
 
 def limpiar_para_voz(texto: str) -> str:
@@ -291,11 +330,18 @@ def limpiar_para_voz(texto: str) -> str:
 async def frases_del_llm(cliente: httpx.AsyncClient, perfil: Perfil, sesion: str, pregunta: str,
                          fragmentos: list[dict[str, Any]]) -> AsyncIterator[str]:
     """Respuesta del LLM en streaming, entregada frase a frase en cuanto se completa cada una."""
-    referencia = "\n\n".join(f"[{f['documento']}]\n{f['texto']}" for f in fragmentos) \
-        or "(no hay información disponible)"
+    referencia = "\n\n".join(
+        f"[Producto: {producto_de(f['documento']) or 'general'} · {f['documento']}]\n{f['texto']}"
+        for f in fragmentos) or "(no hay información disponible)"
     mensajes = [{"role": "system", "content": _SISTEMA.format(nombre=perfil.nombre,
                                                               max_palabras=MAX_PALABRAS)}]
-    mensajes += CONVERSACIONES.get(sesion, [])[-2 * HISTORIAL_TURNOS:]
+    # Una pregunta que nombra un producto se entiende sola: sin historial, para que el LLM no
+    # siga con el tema anterior (el historial queda para «¿y cuánto cuesta?», «¿y eso?»…)
+    q = _clave(pregunta)
+    autonoma = any(_clave(producto_de(f["documento"])) in q
+                   for f in fragmentos if producto_de(f["documento"]))
+    if not autonoma:
+        mensajes += CONVERSACIONES.get(sesion, [])[-2 * HISTORIAL_TURNOS:]
     mensajes.append({"role": "user", "content":
                      f"INFORMACIÓN DE REFERENCIA:\n{referencia}\n\nPREGUNTA: {pregunta}"})
     pendiente = ""
