@@ -247,7 +247,7 @@ services:
       - CONVERSA_ESCENA=noche              # fondo la primera vez
       - CONVERSA_STT_MODELO=${STT_MODELO:-ggml-large-v3-turbo.bin}   # el que carga whisper-server
       - CONVERSA_MAX_PALABRAS=260          # ≈ 2 minutos de voz
-      - CONVERSA_CLIPS_EN_PARALELO=3
+      - CONVERSA_CLIPS_EN_PARALELO=1     # uno a la vez: con 3, el primero compartía la GPU y tardaba el doble
       - CONVERSA_VIDEO=1                   # la primera vez: vídeo animado activado
       - CONVERSA_RELLENO=1                 # «Déjame pensarlo, te respondo en breve.» al empezar cada respuesta
       - CONVERSA_OLLAMA_URL=http://host.docker.internal:11434

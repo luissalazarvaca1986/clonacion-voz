@@ -58,7 +58,10 @@ MAX_PALABRAS = int(os.getenv("CONVERSA_MAX_PALABRAS", "260"))
 # más largos para amortizar el arranque de cada proceso de animación.
 PALABRAS_PRIMER_CLIP = int(os.getenv("CONVERSA_PALABRAS_PRIMER_CLIP", "6"))
 PALABRAS_CLIP = int(os.getenv("CONVERSA_PALABRAS_CLIP", "30"))
-CLIPS_EN_PARALELO = int(os.getenv("CONVERSA_CLIPS_EN_PARALELO", "3"))
+# Uno a la vez: con 3 en paralelo el primer clip compartía la GPU y tardaba el doble
+# (7–10 s de silencio tras el relleno frente a 2–3 s); la voz se genera ~2 veces más rápido
+# de lo que suena, así que los siguientes llegan a tiempo igualmente.
+CLIPS_EN_PARALELO = int(os.getenv("CONVERSA_CLIPS_EN_PARALELO", "1"))
 FRAGMENTOS = int(os.getenv("CONVERSA_FRAGMENTOS", "6"))
 SEGUNDOS_REPOSO = float(os.getenv("CONVERSA_SEGUNDOS_REPOSO", "8"))
 DIR_VIDEOS = Path(os.getenv("CONVERSA_DIR_VIDEOS", "/videos"))
@@ -514,6 +517,20 @@ async def con_lista_completa(cliente: httpx.AsyncClient, consulta: str,
     return fragmentos
 
 
+# Saludos, agradecimientos y despedidas: no arrastran el tema anterior ni buscan en el
+# conocimiento («hola, ¿cómo estás?» tras hablar de Dynatrace no debe volver a Dynatrace)
+_CORTESIA = re.compile(
+    r"\b(hola|buen[oa]s?(?: d[ií]as| tardes| noches)?|qu[eé] tal|c[oó]mo (?:est[aá]s|est[aá]|"
+    r"te va|vas|andas)|y t[uú]|muchas gracias|gracias|ok(?:ay)?|vale|perfecto|genial|excelente|"
+    r"chao|adi[oó]s|hasta (?:luego|pronto|ma[nñ]ana)|saludos|mucho gusto|encantad[oa]|"
+    r"de nada|bien|muy bien|todo bien|igualmente)\b", re.I)
+
+
+def es_cortesia(pregunta: str) -> bool:
+    resto = re.sub(r"[^\w\s]", " ", _CORTESIA.sub(" ", pregunta))
+    return bool(_CORTESIA.search(pregunta)) and len(resto.split()) <= 1
+
+
 TEMA: dict[str, list[str]] = {}   # sesión → últimos productos nombrados
 
 
@@ -527,7 +544,7 @@ def consulta_de_busqueda(pregunta: str, sesion: str, productos: set[str]) -> str
         TEMA[sesion] = nombrados
         return pregunta
     previas = [m["content"] for m in CONVERSACIONES.get(sesion, []) if m["role"] == "user"]
-    if not previas or len(pregunta.split()) > 10:
+    if not previas or len(pregunta.split()) > 10 or es_cortesia(pregunta):
         return pregunta
     tema = " ".join(TEMA.get(sesion, []))
     return " ".join(x for x in (tema, previas[-1], pregunta) if x)
@@ -556,7 +573,7 @@ async def frases_del_llm(cliente: httpx.AsyncClient, perfil: Perfil, sesion: str
     q = _clave(pregunta)
     autonoma = any(_clave(producto_de(f["documento"])) in q
                    for f in fragmentos if producto_de(f["documento"]))
-    if not autonoma:
+    if not autonoma and not es_cortesia(pregunta):
         mensajes += CONVERSACIONES.get(sesion, [])[-2 * HISTORIAL_TURNOS:]
     mensajes.append({"role": "user", "content":
                      f"INFORMACIÓN DE REFERENCIA:\n{referencia}\n\nPREGUNTA: {pregunta}"})
@@ -616,7 +633,15 @@ async def clips_de_respuesta(frases: AsyncIterator[str]) -> AsyncIterator[str]:
         return min(PALABRAS_CLIP, PALABRAS_PRIMER_CLIP * 2 ** numero)
 
     async for frase in frases:
-        for trozo in _partir_frase(frase, PALABRAS_CLIP):
+        # El primer clip se corta en la primera coma tras unas palabras: cuanto antes empiece
+        # a hablar, menos espera (una frase de 30 palabras tarda ~5 s más en generarse)
+        trozos = _partir_frase(frase, PALABRAS_CLIP)
+        if numero == 0 and not actual and len(trozos[0].split()) > 2 * PALABRAS_PRIMER_CLIP:
+            m = re.search(rf"^((?:\S+\s+){{{PALABRAS_PRIMER_CLIP - 1},16}}?\S+[,;:])\s+(.+)$",
+                          trozos[0], re.S)
+            if m:
+                trozos = [m.group(1), m.group(2)] + trozos[1:]
+        for trozo in trozos:
             n = len(trozo.split())
             if palabras_total + n > MAX_PALABRAS:
                 if actual:
@@ -665,6 +690,41 @@ def para_voz(texto: str) -> str:
     return texto
 
 
+# ---- Clips comprimidos ---------------------------------------------------------------
+# El backend entrega WAV (~48 KB por segundo de voz). Por el Wi-Fi del celular cada clip
+# tardaba más en bajar que en sonar y quedaban pausas entre clips; en AAC pesa ~8 veces menos.
+DIR_COMPRIMIDOS = Path(os.getenv("CONVERSA_DIR_COMPRIMIDOS", "/tmp/audios-m4a"))
+
+
+async def comprimir_audio(wav: str) -> str:
+    """«x.wav» → «x.m4a» (AAC mono 48 kbps) en DIR_COMPRIMIDOS. Si ffmpeg falla, devuelve
+    el WAV para que el clip suene igual."""
+    destino = DIR_COMPRIMIDOS / f"{Path(wav).stem}.m4a"
+    if destino.is_file():
+        return destino.name
+    DIR_COMPRIMIDOS.mkdir(parents=True, exist_ok=True)
+    temporal = destino.with_suffix(".tmp.m4a")
+    try:
+        proceso = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-loglevel", "error", "-i", str(DIR_AUDIOS / wav), "-ac", "1",
+            "-c:a", "aac", "-b:a", "48k", "-movflags", "+faststart", str(temporal),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, error = await proceso.communicate()
+        if proceso.returncode != 0:
+            raise RuntimeError(error.decode(errors="replace")[:200])
+        temporal.replace(destino)
+        return destino.name
+    except (OSError, RuntimeError) as e:
+        log.warning("No se pudo comprimir %s: %s", wav, e)
+        temporal.unlink(missing_ok=True)
+        return wav
+
+
+def url_comprimida(url: str) -> str:
+    """«/audios/x.wav» → «/audios/x.m4a» (la ruta la crea al pedirla si aún no existe)."""
+    return f"{url[:-4]}.m4a" if url.startswith("/audios/") and url.endswith(".wav") else url
+
+
 async def sintetizar(cliente: httpx.AsyncClient, texto: str, video: bool, perfil: Perfil,
                      tareas: set[str] | None = None) -> dict[str, Any]:
     """Voz (+ vídeo animado de Luisa si `video`) con el backend. Devuelve el evento «fin»
@@ -698,7 +758,7 @@ async def sintetizar(cliente: httpx.AsyncClient, texto: str, video: bool, perfil
                     else:
                         if not ev.get("archivo"):
                             raise RuntimeError("El clip terminó sin audio.")
-                        ev["url"] = f"/audios/{ev['archivo']}"
+                        ev["url"] = f"/audios/{await comprimir_audio(ev['archivo'])}"
                     return ev
                 if tipo in ("error", "cancelada"):
                     raise RuntimeError(ev.get("mensaje") or tipo)
@@ -760,7 +820,10 @@ def _url_relleno(perfil: Perfil, video: bool, texto: str) -> str | None:
     except (OSError, ValueError, KeyError):
         return None
     carpeta = DIR_VIDEOS if url.startswith("/videos/") else DIR_AUDIOS
-    return url if (carpeta / Path(url).name).is_file() else None
+    nombre = Path(url).name
+    if nombre.endswith(".m4a"):          # el comprimido sale del WAV original
+        nombre = f"{nombre[:-4]}.wav"
+    return url if (carpeta / nombre).is_file() else None
 
 
 def elegir_relleno(perfil: Perfil, video: bool, sesion: str) -> tuple[str, str] | None:
@@ -773,7 +836,7 @@ def elegir_relleno(perfil: Perfil, video: bool, sesion: str) -> tuple[str, str] 
     candidatos = [x for x in listos if x[0] != ULTIMO_RELLENO.get(sesion)] or listos
     texto, url = random.choice(candidatos)
     ULTIMO_RELLENO[sesion] = texto
-    return texto, url
+    return texto, url_comprimida(url)
 
 
 async def crear_relleno(perfil: Perfil, video: bool) -> bool:
@@ -813,7 +876,7 @@ async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) ->
 
             productos = await catalogo_productos(cliente)
             consulta = consulta_de_busqueda(pregunta, turno.sesion, productos)
-            fragmentos = await con_lista_completa(
+            fragmentos = [] if es_cortesia(pregunta) else await con_lista_completa(
                 cliente, consulta, await buscar_contexto(cliente, consulta))
             await turno.emitir("contexto", fuentes=sorted({f["documento"] for f in fragmentos}),
                                segundos=round(time.time() - inicio, 2))
@@ -1158,7 +1221,16 @@ async def video(archivo: str) -> FileResponse:
 
 @app.api_route("/audios/{archivo}", methods=["GET", "HEAD"])
 async def audio_clip(archivo: str) -> FileResponse:
-    ruta = DIR_AUDIOS / Path(archivo).name
+    nombre = Path(archivo).name
+    if nombre.endswith(".m4a"):     # versión comprimida (se crea si aún no existe)
+        if not (DIR_AUDIOS / f"{nombre[:-4]}.wav").is_file():
+            raise HTTPException(404, "No existe ese audio")
+        comprimido = await comprimir_audio(f"{nombre[:-4]}.wav")
+        if comprimido.endswith(".m4a"):
+            return FileResponse(DIR_COMPRIMIDOS / comprimido, media_type="audio/mp4",
+                                headers={"Cache-Control": "max-age=86400"})
+        nombre = comprimido
+    ruta = DIR_AUDIOS / nombre
     if ruta.suffix != ".wav" or not ruta.is_file():
         raise HTTPException(404, "No existe ese audio")
     return FileResponse(ruta, media_type="audio/wav")

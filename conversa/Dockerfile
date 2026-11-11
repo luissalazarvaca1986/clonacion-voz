@@ -1,6 +1,9 @@
 # Asistente por voz con avatar: web (puerto 8080) + orquestación STT → RAG → LLM → vídeo
 FROM python:3.12-slim
 WORKDIR /app
+# ffmpeg comprime los clips de voz (WAV → AAC, ~8 veces menos) para el celular por Wi-Fi
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py ajustes.py ./

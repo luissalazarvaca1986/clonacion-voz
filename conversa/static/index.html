@@ -282,6 +282,18 @@
     dialog.modelos form { padding: 14px 16px; gap: 10px; }
   }
 
+  /* Pensando: capa gris al 50 % sobre todo el avatar y una lupa blanca que aparece y se
+     desvanece en ciclos, hasta que empieza a sonar la respuesta */
+  .capa-buscando { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center;
+    background: rgba(128,128,128,.5); color: #fff; opacity: 0; pointer-events: none;
+    transition: opacity .35s ease; }
+  .capa-buscando svg { width: clamp(48px, 14%, 120px); height: auto;
+    filter: drop-shadow(0 2px 8px rgba(0,0,0,.35)); }
+  body.buscando .capa-buscando { opacity: 1; }
+  body.buscando .capa-buscando svg { animation: lupa 1.6s ease-in-out infinite; }
+  @keyframes lupa { 0%, 100% { opacity: .15; transform: scale(.92); } 50% { opacity: 1; transform: scale(1.04); } }
+  @media (prefers-reduced-motion: reduce) { body.buscando .capa-buscando svg { animation: none; opacity: .9; } }
+
   [hidden] { display: none !important; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 </style>
@@ -296,6 +308,9 @@
     <video class="clip" id="clipA" playsinline preload="auto"></video>
     <video class="clip" id="clipB" playsinline preload="auto"></video>
     <div class="inicial" aria-hidden="true"><span id="inicial"></span></div>
+    <div class="capa-buscando" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+    </div>
     <button class="completa-btn" id="completa" title="Pantalla completa (F)" aria-label="Pantalla completa" hidden>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <path id="iconoCompleta" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>
@@ -519,6 +534,9 @@ let hablando = false;
 function nuevoTurnoEnPantalla(id) {
   detenerClips();
   turnoEnPantalla = id; clips = new Map(); siguiente = 1; totalClips = null;
+  for (const u of delTurno) { URL.revokeObjectURL(u); soloAudioLocal.delete(u); }
+  delTurno.clear();
+  colaDescargas = Promise.resolve();   // las del turno anterior ya no hacen esperar
 }
 function detenerClips() {
   // Se olvida también qué tenía cargado: si el clip siguiente es el mismo archivo (el relleno
@@ -527,10 +545,36 @@ function detenerClips() {
   actual = null; hablando = false; marca("hablando", false);
 }
 function precargar() {
-  // Deja el siguiente clip cargado en el reproductor libre para un cambio instantáneo
+  // Deja el clip que viene cargado en el reproductor libre para un cambio instantáneo: si
+  // ya suena uno, el que viene es el siguiente a ese (antes se volvía a cargar el mismo)
   const libre = reproductores.find((v) => v !== actual);
-  const url = clips.get(siguiente);
+  const url = clips.get(actual ? siguiente + 1 : siguiente);
   if (libre && url && libre.dataset.url !== url) { libre.dataset.url = url; libre.src = url; libre.load(); }
+}
+
+// Cada clip se descarga entero a memoria en cuanto el servidor avisa que está listo. El
+// reproductor del celular lo bajaba poco a poco al reproducirlo y cada cambio de clip
+// esperaba a la red (pausas de 7 a 15 s). Los rellenos se guardan para todo el rato.
+const enMemoria = new Map();    // URL del servidor → blob: URL
+const delTurno = new Set();     // blob: URL de los clips del turno, para liberarlas
+const soloAudioLocal = new Set();   // blob: URL que son audio (suenan sobre el reposo)
+let colaDescargas = Promise.resolve();
+function descargar(url, guardar) {
+  // En orden de llegada, una tras otra: así el primer clip no reparte la red con los demás
+  const p = colaDescargas.then(() => bajar(url, guardar));
+  colaDescargas = p.catch(() => {});
+  return p;
+}
+async function bajar(url, guardar) {
+  if (enMemoria.has(url)) return enMemoria.get(url);
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(r.statusText);
+    const local = URL.createObjectURL(await r.blob());
+    if (url.startsWith("/audios/")) soloAudioLocal.add(local);
+    if (guardar) enMemoria.set(url, local); else delTurno.add(local);
+    return local;
+  } catch { return url; }        // si falla la descarga, se reproduce desde el servidor
 }
 function avanzar() {
   if (actual) return;                 // ya hay uno sonando; avanzará al terminar
@@ -551,8 +595,10 @@ function avanzar() {
     setTimeout(() => { if (anterior !== actual) anterior.classList.remove("visible"); }, 200);
     precargar();
   };
-  const soloAudio = url.startsWith("/audios/");
+  const soloAudio = url.startsWith("/audios/") || soloAudioLocal.has(url);
+  const esRespuesta = siguiente >= 1;   // el 0 es el relleno: la lupa sigue mientras suena
   v.play().then(() => {
+    if (esRespuesta) marca("buscando", false);
     if (!soloAudio) v.classList.add("visible");   // el audio suena sobre el reposo
     for (const otro of reproductores) if (otro !== v && otro !== actual) setTimeout(() => otro.classList.remove("visible"), 200);
     precargar();
@@ -818,30 +864,39 @@ async function abrirTurno(datos) {
         nuevoTurnoEnPantalla(id);   // interrumpe la respuesta anterior, si la había
         pregunta = ev.texto;
         marca("pensando", true);
+        marca("buscando", true);
         mensaje(`<b>«${escapar(pregunta)}»</b>`);
         break;
       case "relleno":   // «Déjame pensarlo…»: suena ya y la respuesta entra detrás
         if (!esActual() || actual || clips.size) break;
-        clips.set(0, ev.url); siguiente = 0;
-        avanzar();
+        descargar(ev.url, true).then((local) => {
+          if (!esActual() || actual || clips.size) return;
+          clips.set(0, local); siguiente = 0;
+          avanzar();
+        });
         break;
-      case "clip":
+      case "clip": {
         if (!esActual()) break;
-        clips.set(ev.indice, ev.url);
-        if (ev.indice === siguiente) precargar();
-        avanzar();
+        const indice = ev.indice;
+        descargar(ev.url, false).then((local) => {
+          if (!esActual()) return;
+          clips.set(indice, local);
+          precargar();
+          avanzar();
+        });
         break;
+      }
       case "total":
         if (!esActual()) break;
         totalClips = ev.clips;
-        if (ev.clips === 0) { marca("pensando", false); volverAEscuchar(); }
+        if (ev.clips === 0) { marca("pensando", false); marca("buscando", false); volverAEscuchar(); }
         break;
       case "error":
         if (esActual()) fallo(ev.mensaje);
         break;
       case "fin":
         fuente.close();
-        if (esActual() && !hablando && clips.size === 0) marca("pensando", false);
+        if (esActual() && !hablando && clips.size === 0) { marca("pensando", false); marca("buscando", false); }
         break;
     }
   };
@@ -852,6 +907,7 @@ function volverAEscuchar() {}   // la última pregunta sigue visible hasta la si
 
 function fallo(texto) {
   marca("pensando", false);
+  marca("buscando", false);
   mensaje("No pude responder: " + escapar(texto || "error desconocido"), true);
   setTimeout(() => { if (estadoEl.classList.contains("error")) mensaje(""); }, 6000);
 }
