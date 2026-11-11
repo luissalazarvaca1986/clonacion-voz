@@ -121,8 +121,12 @@ async def opciones() -> dict[str, Any]:
         stt.insert(0, STT_INICIAL)
     # En el TTS va primero el que el backend usa por defecto en este equipo
     tts = sorted(tts, key=lambda m: not m.get("actual"))
-    # En el LLM, el que ya está cargado
-    llm = sorted(llm, key=lambda m: (m.get("status") or {}).get("value") != "loaded")
+    # En el LLM, primero los preferidos de este equipo (CONVERSA_LLM_PREFERIDO, por orden;
+    # p. ej. el grande en el DGX Spark) y después el que ya está cargado
+    preferidos = [x.strip() for x in os.getenv("CONVERSA_LLM_PREFERIDO", "").split(",") if x.strip()]
+    llm = sorted(llm, key=lambda m: (
+        preferidos.index(m["id"]) if m["id"] in preferidos else len(preferidos),
+        (m.get("status") or {}).get("value") != "loaded"))
 
     return {
         # Utilizables: completos, con su voz en este equipo y con los puntos de su cara

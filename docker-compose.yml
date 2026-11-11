@@ -247,6 +247,8 @@ services:
       - CONVERSA_ESCENA=noche              # fondo la primera vez
       - CONVERSA_STT_MODELO=${STT_MODELO:-ggml-large-v3-turbo.bin}   # el que carga whisper-server
       - CONVERSA_MAX_PALABRAS=260          # ≈ 2 minutos de voz
+      # LLM predeterminado en este equipo (el primero que exista); los ligeros quedan de respaldo
+      - CONVERSA_LLM_PREFERIDO=Qwen3.5-35B-A3B-Q4_K_M,Qwen3.5-9B-Q4_K_M
       - CONVERSA_CLIPS_EN_PARALELO=1     # uno a la vez: con 3, el primero compartía la GPU y tardaba el doble
       - CONVERSA_VIDEO=1                   # la primera vez: vídeo animado activado
       - CONVERSA_RELLENO=1                 # «Déjame pensarlo, te respondo en breve.» al empezar cada respuesta
