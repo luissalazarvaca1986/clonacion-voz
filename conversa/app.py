@@ -96,6 +96,8 @@ Reglas:
 - Rattio (Compañía INFORATTIO Cía. Ltda., Quito) no fabrica las plataformas de sus socios:
   las revende, las implementa y presta servicios gestionados sobre ellas. Si preguntan si
   Rattio vende o trabaja con una de esas plataformas, la respuesta es sí, como socio.
+- Si te preguntan por ti (quién eres, dónde vives, qué haces), contesta en primera persona,
+  por ejemplo: «Soy {nombre}, la asistente virtual de Rattio; trabajo desde Quito, Ecuador».
 - Si solo saludan, agradecen o se despiden, responde con una frase cortés y breve, sin
   hablar de productos.
 - Si la pregunta es ambigua («¿ya se corrigió?», «¿y eso?») y no queda claro a qué se
@@ -384,7 +386,7 @@ def corregir_nombres(texto: str, productos: set[str]) -> str:
             return None
         parecidas = [k for k in claves if len(k) >= 7 and k[0] == clave[0]
                      and abs(len(k) - len(clave)) <= 2]
-        cerca = difflib.get_close_matches(clave, parecidas, n=1, cutoff=0.86)
+        cerca = difflib.get_close_matches(clave, parecidas, n=1, cutoff=0.8)
         return claves[cerca[0]] if cerca else None
 
     palabras = texto.split(" ")
@@ -526,9 +528,54 @@ _CORTESIA = re.compile(
     r"de nada|bien|muy bien|todo bien|igualmente)\b", re.I)
 
 
-def es_cortesia(pregunta: str) -> bool:
+def es_cortesia(pregunta: str, sesion: str = "") -> bool:
+    """Solo saludo, gracias o despedida. «Ok», «perfecto»… tras una oferta no lo son: son un sí."""
+    if sesion and oferta_aceptada(pregunta, sesion):
+        return False
     resto = re.sub(r"[^\w\s]", " ", _CORTESIA.sub(" ", pregunta))
     return bool(_CORTESIA.search(pregunta)) and len(resto.split()) <= 1
+
+
+# ---- Seguimiento de lo que ella ofreció -----------------------------------------------
+# «Puedo darte más información de X si quieres» → «Adelante»: hay que continuar con X.
+_SI = re.compile(r"\b(s[ií]|adelante|dale|claro|por favor|me interesa|cu[eé]ntame|continu[aá]|"
+                 r"sigue|contin[uú]a|ok(?:ay)?|vale|perfecto|de acuerdo|por supuesto|desde luego|"
+                 r"hazlo|expl[ií]camelo|d[ií]melo|quiero saber|m[aá]s informaci[oó]n|va)\b", re.I)
+_OFERTA = re.compile(r"\?|\b(puedo|podr[ií]a|te gustar[ií]a|quieres|deseas|necesitas|"
+                     r"si (?:te interesa|quieres|necesitas|deseas))\b", re.I)
+
+
+def _ultima_respuesta(sesion: str) -> str:
+    return next((m["content"] for m in reversed(CONVERSACIONES.get(sesion, []))
+                 if m["role"] == "assistant"), "")
+
+
+def _final_de(texto: str, frases: int = 2) -> str:
+    partes = [p for p in re.split(r"(?<=[.!?¿])\s+", texto) if p.strip()]
+    return " ".join(partes[-frases:])
+
+
+# «Adelante», «dale», «continúa», «cuéntame más»: seguir con lo que estaba explicando aunque
+# no lo haya ofrecido con una pregunta
+_CONTINUAR = re.compile(r"\b(adelante|dale|contin[uú]a|sigue|cu[eé]ntame m[aá]s|dime m[aá]s|"
+                        r"qu[eé] m[aá]s|m[aá]s detalles?|ampl[ií]a|profundiza|explica m[aá]s)\b", re.I)
+
+
+def oferta_aceptada(pregunta: str, sesion: str) -> str:
+    """Si la pregunta es un «sí / adelante» corto que no nombra otro producto y la última
+    respuesta ofrecía o preguntaba algo (o pide seguir), devuelve el final de esa respuesta."""
+    final = _final_de(_ultima_respuesta(sesion))
+    if not final:
+        return ""
+    q = _clave(pregunta)
+    if any(_clave(p) and _clave(p) in q for p in _CATALOGO["productos"]):
+        return ""                     # nombra un producto: es una pregunta nueva
+    resto = re.sub(r"[^\w\s]", " ", _SI.sub(" ", _CONTINUAR.sub(" ", pregunta)))
+    if len(resto.split()) > 4:
+        return ""
+    if _CONTINUAR.search(pregunta) or (_SI.search(pregunta) and _OFERTA.search(final)):
+        return final
+    return ""
 
 
 TEMA: dict[str, list[str]] = {}   # sesión → últimos productos nombrados
@@ -543,11 +590,18 @@ def consulta_de_busqueda(pregunta: str, sesion: str, productos: set[str]) -> str
     if nombrados:
         TEMA[sesion] = nombrados
         return pregunta
+    if oferta := oferta_aceptada(pregunta, sesion):
+        # «Adelante»: se busca lo que ella ofreció; sus productos pasan a ser el tema
+        if ofrecidos := [p for p in productos if _clave(p) and _clave(p) in _clave(oferta)]:
+            TEMA[sesion] = ofrecidos
+        return " ".join(x for x in (" ".join(TEMA.get(sesion, [])), oferta) if x)
     previas = [m["content"] for m in CONVERSACIONES.get(sesion, []) if m["role"] == "user"]
-    if not previas or len(pregunta.split()) > 10 or es_cortesia(pregunta):
+    if not previas or len(pregunta.split()) > 10 or es_cortesia(pregunta, sesion):
         return pregunta
+    # Seguimiento corto: el tema, la pregunta anterior y cómo terminó su respuesta
     tema = " ".join(TEMA.get(sesion, []))
-    return " ".join(x for x in (tema, previas[-1], pregunta) if x)
+    return " ".join(x for x in (tema, previas[-1], _final_de(_ultima_respuesta(sesion), 1),
+                                pregunta) if x)
 
 
 def limpiar_para_voz(texto: str) -> str:
@@ -573,10 +627,20 @@ async def frases_del_llm(cliente: httpx.AsyncClient, perfil: Perfil, sesion: str
     q = _clave(pregunta)
     autonoma = any(_clave(producto_de(f["documento"])) in q
                    for f in fragmentos if producto_de(f["documento"]))
-    if not autonoma and not es_cortesia(pregunta):
+    oferta = oferta_aceptada(pregunta, sesion)
+    if (not autonoma and not es_cortesia(pregunta, sesion)) or oferta:
         mensajes += CONVERSACIONES.get(sesion, [])[-2 * HISTORIAL_TURNOS:]
+    if oferta:
+        pista = (f"\n\n(El usuario quiere que sigas con lo que le dijiste u ofreciste al final de "
+                 f"tu respuesta anterior: «{oferta}». Continúa directamente con eso aportando "
+                 f"información nueva, sin repetir lo ya dicho y sin volver a preguntar.)")
+    elif es_cortesia(pregunta, sesion):
+        pista = ("\n\n(Es solo un saludo, un agradecimiento o una despedida: responde a eso con "
+                 "una frase breve y adecuada; por ejemplo, a «gracias» responde «de nada».)")
+    else:
+        pista = ""
     mensajes.append({"role": "user", "content":
-                     f"INFORMACIÓN DE REFERENCIA:\n{referencia}\n\nPREGUNTA: {pregunta}"})
+                     f"INFORMACIÓN DE REFERENCIA:\n{referencia}\n\nPREGUNTA: {pregunta}{pista}"})
     pendiente = ""
     async with cliente.stream("POST", f"{LLM_URL}/v1/chat/completions", json={
         # «model» elige el LLM en llama-server modo router; con un solo modelo se ignora
@@ -871,12 +935,14 @@ async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) ->
                 await _cancelar_turno(anterior)
             await turno.emitir("transcripcion", texto=pregunta,
                                segundos=round(time.time() - inicio, 2))
-            if relleno := elegir_relleno(turno.perfil, turno.video, turno.sesion):
+            # A un saludo no se le contesta «Déjame pensarlo…»: la respuesta sale enseguida
+            if not es_cortesia(pregunta, turno.sesion) and (
+                    relleno := elegir_relleno(turno.perfil, turno.video, turno.sesion)):
                 await turno.emitir("relleno", url=relleno[1], texto=relleno[0])
 
             productos = await catalogo_productos(cliente)
             consulta = consulta_de_busqueda(pregunta, turno.sesion, productos)
-            fragmentos = [] if es_cortesia(pregunta) else await con_lista_completa(
+            fragmentos = [] if es_cortesia(pregunta, turno.sesion) else await con_lista_completa(
                 cliente, consulta, await buscar_contexto(cliente, consulta))
             await turno.emitir("contexto", fuentes=sorted({f["documento"] for f in fragmentos}),
                                segundos=round(time.time() - inicio, 2))

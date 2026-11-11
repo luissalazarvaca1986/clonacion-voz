@@ -283,7 +283,7 @@
   }
 
   /* Pensando: capa gris al 50 % sobre todo el avatar y una lupa blanca que aparece y se
-     desvanece en ciclos, hasta que empieza a sonar la respuesta */
+     desvanece en ciclos. Sale al terminar el relleno y se quita al sonar la respuesta */
   .capa-buscando { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center;
     background: rgba(128,128,128,.5); color: #fff; opacity: 0; pointer-events: none;
     transition: opacity .35s ease; }
@@ -529,6 +529,7 @@ async function cargarReposo() {
 const reproductores = [$("clipA"), $("clipB")];
 let turnoEnPantalla = null, clips = new Map(), siguiente = 1, totalClips = null;
 let actual = null;          // <video> que suena ahora
+let rellenoEnCamino = false;  // el relleno del turno se está descargando
 let hablando = false;
 
 function nuevoTurnoEnPantalla(id) {
@@ -581,6 +582,7 @@ function avanzar() {
   const url = clips.get(siguiente);
   if (!url) {                         // aún no está listo: Luisa sigue en reposo
     if (totalClips !== null && siguiente > totalClips) { hablando = false; marca("hablando", false); volverAEscuchar(); }
+    else if (turnoEnPantalla && siguiente >= 1) marca("buscando", true);   // terminó el relleno y la respuesta aún no llega
     return;
   }
   const v = reproductores.find((x) => x.dataset.url === url) || reproductores[0];
@@ -596,9 +598,8 @@ function avanzar() {
     precargar();
   };
   const soloAudio = url.startsWith("/audios/") || soloAudioLocal.has(url);
-  const esRespuesta = siguiente >= 1;   // el 0 es el relleno: la lupa sigue mientras suena
   v.play().then(() => {
-    if (esRespuesta) marca("buscando", false);
+    marca("buscando", false);           // suena algo (relleno o respuesta): sin lupa
     if (!soloAudio) v.classList.add("visible");   // el audio suena sobre el reposo
     for (const otro of reproductores) if (otro !== v && otro !== actual) setTimeout(() => otro.classList.remove("visible"), 200);
     precargar();
@@ -864,13 +865,18 @@ async function abrirTurno(datos) {
         nuevoTurnoEnPantalla(id);   // interrumpe la respuesta anterior, si la había
         pregunta = ev.texto;
         marca("pensando", true);
-        marca("buscando", true);
+        // La lupa sale cuando termina el relleno («Déjame pensarlo…»); si no hay relleno
+        // sonando enseguida, sale ya
+        rellenoEnCamino = false;
+        setTimeout(() => { if (esActual() && !actual && !rellenoEnCamino && siguiente >= 1 && !clips.has(siguiente)) marca("buscando", true); }, 700);
         mensaje(`<b>«${escapar(pregunta)}»</b>`);
         break;
       case "relleno":   // «Déjame pensarlo…»: suena ya y la respuesta entra detrás
         if (!esActual() || actual || clips.size) break;
+        rellenoEnCamino = true;            // se está descargando: la lupa espera a que suene y termine
         descargar(ev.url, true).then((local) => {
-          if (!esActual() || actual || clips.size) return;
+          rellenoEnCamino = false;
+          if (!esActual() || actual || clips.size) { avanzar(); return; }
           clips.set(0, local); siguiente = 0;
           avanzar();
         });
