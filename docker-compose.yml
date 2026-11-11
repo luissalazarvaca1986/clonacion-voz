@@ -140,9 +140,12 @@ services:
     container_name: clonar-voz-front
     ports:
       - "8094:80"
+      - "9443:443"                         # sala de conversación por HTTPS (micrófono en la LAN)
     volumes:
       - ./html:/usr/share/nginx/html:ro
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/conversa-https.conf:/etc/nginx/conf.d/conversa-https.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
     depends_on:
       clonar-voz-backend:
         condition: service_healthy

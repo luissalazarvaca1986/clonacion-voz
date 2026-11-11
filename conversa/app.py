@@ -16,6 +16,7 @@ nuevo sustituye al anterior (que se cancela) en cuanto hay una transcripción re
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
 import io
 import json
@@ -82,10 +83,21 @@ Reglas:
 - Tu respuesta se convertirá en voz: escribe frases completas y naturales, como si hablaras.
   Nada de listas, viñetas, asteriscos, tablas, emojis, enlaces ni formato markdown.
 - Empieza con una frase breve que responda directamente; después amplía si hace falta.
+  No abras con fórmulas vacías como «Sí, puedo darte información sobre…» o «Claro, con
+  gusto»: la primera frase ya debe contener información.
 - Sé breve: entre una y cinco frases suele bastar. Nunca superes {max_palabras} palabras.
 - No menciones la «información de referencia», los «documentos» ni que eres un modelo.
 - Responde SOLO la PREGUNTA actual. La conversación anterior sirve únicamente para entender
   referencias como «eso» o «y él»; no repitas ni continúes el tema anterior.
+- Rattio (Compañía INFORATTIO Cía. Ltda., Quito) no fabrica las plataformas de sus socios:
+  las revende, las implementa y presta servicios gestionados sobre ellas. Si preguntan si
+  Rattio vende o trabaja con una de esas plataformas, la respuesta es sí, como socio.
+- Si solo saludan, agradecen o se despiden, responde con una frase cortés y breve, sin
+  hablar de productos.
+- Si la pregunta es ambigua («¿ya se corrigió?», «¿y eso?») y no queda claro a qué se
+  refiere, pide con amabilidad que la aclare en vez de suponer un tema.
+- Si te dan una «Lista completa de productos» y preguntan qué productos o plataformas hay,
+  nómbralos TODOS, sin omitir ninguno, con pocas palabras para cada uno.
 - Cada fragmento de referencia indica de qué producto habla. Describe cada producto solo con
   sus propios fragmentos y no le atribuyas lo que se dice de otro. Si preguntan por varios
   productos, responde cada uno por separado, empezando por su nombre."""
@@ -318,6 +330,170 @@ def elegir_fragmentos(pregunta: str, candidatos: list[dict[str, Any]]) -> list[d
     return elegidos or candidatos[:FRAGMENTOS]
 
 
+# ---- Nombres de productos: Whisper los escribe a su manera («Ratio», «Sentinel One»…) ----
+_CATALOGO: dict[str, Any] = {"productos": set(), "hora": 0.0}
+
+
+async def catalogo_productos(cliente: httpx.AsyncClient) -> set[str]:
+    """Productos de SecondBrain («NinjaOne - …» → «NinjaOne»), leídos de los nombres de los
+    documentos de todas las colecciones; se refresca cada 10 minutos."""
+    if time.time() - _CATALOGO["hora"] < 600 and _CATALOGO["productos"]:
+        return _CATALOGO["productos"]
+    productos: set[str] = set()
+    try:
+        r = await cliente.get(f"{CHROMA_URL}{CHROMA_BASE}/collections", timeout=10)
+        r.raise_for_status()
+        for col in r.json():
+            q = await cliente.post(f"{CHROMA_URL}{CHROMA_BASE}/collections/{col['id']}/get",
+                                   json={"include": ["metadatas"]}, timeout=15)
+            if q.status_code == 200:
+                for meta in q.json().get("metadatas") or []:
+                    if p := producto_de((meta or {}).get("nombre", "")):
+                        productos.add(p)
+    except httpx.HTTPError as e:
+        log.warning("No se pudo leer el catálogo de productos: %s", e)
+    if productos:
+        _CATALOGO.update(productos=productos, hora=time.time())
+    return _CATALOGO["productos"]
+
+
+def _compacta(texto: str) -> str:
+    """«Rattio»/«Ratio», «Sentinel One»/«SentinelOne» → misma clave (sin letras repetidas)."""
+    return re.sub(r"(.)\1+", r"\1", _clave(texto))
+
+
+def corregir_nombres(texto: str, productos: set[str]) -> str:
+    """Escribe bien los nombres de producto que Whisper oye parecido. Una sola palabra solo
+    se corrige si va en mayúscula («Ratio» sí, «el ratio de…» no)."""
+    claves = {_compacta(p): p for p in productos if len(_compacta(p)) >= 4}
+    if not claves:
+        return texto
+
+    def exacto(nucleo: str) -> str | None:
+        return claves.get(_compacta(nucleo))
+
+    def aproximado(nucleo: str) -> str | None:
+        # Casi igual («Prom security», «Sentinel Wan»): solo nombres largos, de longitud
+        # parecida y con la misma inicial, para no tragarse palabras vecinas («es», «y»)
+        clave = _compacta(nucleo)
+        if len(clave) < 7:
+            return None
+        parecidas = [k for k in claves if len(k) >= 7 and k[0] == clave[0]
+                     and abs(len(k) - len(clave)) <= 2]
+        cerca = difflib.get_close_matches(clave, parecidas, n=1, cutoff=0.86)
+        return claves[cerca[0]] if cerca else None
+
+    palabras = texto.split(" ")
+    salida: list[str] = []
+    i = 0
+    while i < len(palabras):
+        # Primero coincidencias exactas (3, 2 o 1 palabras); después aproximadas (2 o 1)
+        for buscar, tamanos in ((exacto, (3, 2, 1)), (aproximado, (2, 1))):
+            hecho = False
+            for n in tamanos:
+                grupo = palabras[i:i + n]
+                if len(grupo) < n:
+                    continue
+                nucleo = re.sub(r"^\W+|\W+$", "", " ".join(grupo))
+                producto = buscar(nucleo) if nucleo else None
+                if producto and (n > 1 or nucleo[:1].isupper()):
+                    inicio = re.match(r"^\W*", grupo[0]).group()
+                    fin = re.search(r"\W*$", grupo[-1]).group()
+                    salida.append(f"{inicio}{producto}{fin}")
+                    i += n
+                    hecho = True
+                    break
+            if hecho:
+                break
+        else:
+            salida.append(palabras[i])
+            i += 1
+    return " ".join(salida)
+
+
+# ---- Preguntas de lista («qué productos tiene Rattio») -----------------------------------
+# La tabla de productos de un documento queda repartida en varios fragmentos y la búsqueda
+# solo trae algunos, así que la respuesta salía incompleta. Para estas preguntas se arma la
+# tabla entera desde el documento y se entrega como un solo fragmento.
+_LISTA = re.compile(r"\b(productos?|plataformas?|portafolio|portfolio|soluciones|marcas|"
+                    r"fabricantes|socios|cat[aá]logo|qu[eé] (?:venden?|ofrecen?|tienen?|manejan?|"
+                    r"comercializan?|distribuyen?))\b", re.I)
+_SECCION_LISTA = re.compile(r"#{2,3} (?:Productos|Plataformas)[^#]*", re.I)
+_FILA = re.compile(r"\|\s*\*\*([^*|]+)\*\*[^|]*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|")
+_DOCUMENTOS: dict[str, tuple[float, str]] = {}
+
+
+def _unir_fragmentos(trozos: list[str]) -> str:
+    """Une fragmentos consecutivos quitando el solapamiento entre uno y el siguiente."""
+    texto = ""
+    for trozo in trozos:
+        solape = next((n for n in range(min(len(texto), len(trozo), 400), 20, -1)
+                       if texto.endswith(trozo[:n])), 0)
+        texto += trozo[solape:] if solape else ("\n" + trozo if texto else trozo)
+    return texto
+
+
+async def documento_completo(cliente: httpx.AsyncClient, nombre: str) -> str:
+    if (cache := _DOCUMENTOS.get(nombre)) and time.time() - cache[0] < 600:
+        return cache[1]
+    r = await cliente.get(f"{CHROMA_URL}{CHROMA_BASE}/collections", timeout=10)
+    r.raise_for_status()
+    for col in r.json():
+        q = await cliente.post(f"{CHROMA_URL}{CHROMA_BASE}/collections/{col['id']}/get",
+                               json={"include": ["metadatas", "documents"],
+                                     "where": {"nombre": nombre}}, timeout=15)
+        datos = q.json() if q.status_code == 200 else {}
+        if datos.get("ids"):
+            trozos = sorted(zip((m.get("chunk_index", 0) for m in datos["metadatas"]),
+                                datos["documents"]))
+            texto = _unir_fragmentos([t for _, t in trozos])
+            _DOCUMENTOS[nombre] = (time.time(), texto)
+            return texto
+    return ""
+
+
+async def con_lista_completa(cliente: httpx.AsyncClient, consulta: str,
+                             fragmentos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Si la pregunta pide la lista de productos y los fragmentos vienen de un documento con
+    una tabla de productos, esa tabla va entera y primero."""
+    if not _LISTA.search(consulta):
+        return fragmentos
+    for nombre in dict.fromkeys(f["documento"] for f in fragmentos):
+        try:
+            texto = await documento_completo(cliente, nombre)
+        except httpx.HTTPError:
+            continue
+        filas = [f"- {n.strip()}: {que.rstrip('.')}. {desc}"
+                 for seccion in _SECCION_LISTA.findall(texto)
+                 for n, que, desc in _FILA.findall(seccion)
+                 if que.strip().lower() not in ("qué es", "---")]
+        if len(filas) >= 3:
+            lista = {"documento": nombre, "distancia": 0.0, "texto":
+                     f"Lista completa de productos y plataformas ({len(filas)}):\n"
+                     + "\n".join(filas)}
+            return [lista] + fragmentos[:max(1, FRAGMENTOS - 3)]
+    return fragmentos
+
+
+TEMA: dict[str, list[str]] = {}   # sesión → últimos productos nombrados
+
+
+def consulta_de_busqueda(pregunta: str, sesion: str, productos: set[str]) -> str:
+    """Una pregunta corta que no nombra ningún producto («¿ya se corrigió?», «¿y cuánto
+    cuesta?») se busca con el tema de la conversación (los productos nombrados antes) y la
+    pregunta anterior, para no traer fragmentos al azar de otros productos."""
+    q = _clave(pregunta)
+    nombrados = [p for p in productos if _clave(p) and _clave(p) in q]
+    if nombrados:
+        TEMA[sesion] = nombrados
+        return pregunta
+    previas = [m["content"] for m in CONVERSACIONES.get(sesion, []) if m["role"] == "user"]
+    if not previas or len(pregunta.split()) > 10:
+        return pregunta
+    tema = " ".join(TEMA.get(sesion, []))
+    return " ".join(x for x in (tema, previas[-1], pregunta) if x)
+
+
 def limpiar_para_voz(texto: str) -> str:
     texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.S)
     texto = re.sub(r"[*_#`>|~]+", "", texto)
@@ -486,6 +662,7 @@ async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) ->
         async with httpx.AsyncClient() as cliente:
             # Sin micrófono, el texto escrito entra como si fuera la transcripción de Whisper
             pregunta = " ".join(texto.split()) if texto else await transcribir(cliente, wav)
+            pregunta = corregir_nombres(pregunta, await catalogo_productos(cliente))
             if not pregunta:
                 await turno.emitir("vacio")
                 return
@@ -499,7 +676,10 @@ async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) ->
             if relleno := url_relleno(turno.perfil, turno.video):
                 await turno.emitir("relleno", url=relleno, texto=TEXTO_RELLENO)
 
-            fragmentos = await buscar_contexto(cliente, pregunta)
+            productos = await catalogo_productos(cliente)
+            consulta = consulta_de_busqueda(pregunta, turno.sesion, productos)
+            fragmentos = await con_lista_completa(
+                cliente, consulta, await buscar_contexto(cliente, consulta))
             await turno.emitir("contexto", fuentes=sorted({f["documento"] for f in fragmentos}),
                                segundos=round(time.time() - inicio, 2))
 
@@ -677,6 +857,7 @@ async def guardar_configuracion(datos: dict[str, Any]) -> dict:
     ajustes.guardar(config)
     if PERFIL and PERFIL.avatar != perfil.avatar:
         CONVERSACIONES.clear()          # otro avatar: conversación nueva
+        TEMA.clear()
     PERFIL = perfil
     preparar(perfil)
     return {"configuracion": config,
@@ -693,7 +874,8 @@ async def solo_transcribir(audio: UploadFile = File(...)) -> dict:
         return {"texto": ""}
     async with httpx.AsyncClient() as cliente:
         try:
-            return {"texto": await transcribir(cliente, wav)}
+            return {"texto": corregir_nombres(await transcribir(cliente, wav),
+                                              await catalogo_productos(cliente))}
         except httpx.HTTPError as e:
             raise HTTPException(502, f"No se pudo transcribir: {e}")
 
@@ -750,6 +932,7 @@ async def cancelar(id_turno: str) -> dict:
 @app.post("/api/sesion/{sesion}/olvidar")
 async def olvidar(sesion: str) -> dict:
     CONVERSACIONES.pop(sesion, None)
+    TEMA.pop(sesion, None)
     return {"ok": True}
 
 
@@ -789,8 +972,26 @@ async def avatar(avatar: str = "", escena: str = "") -> Response:
             r = await cliente.get(f"{BACKEND_URL}/api/avatares/{id_avatar}/vista/dia")
     if r.status_code != 200:
         raise HTTPException(502, "No se pudo obtener la imagen del avatar")
-    return Response(r.content, media_type=r.headers.get("content-type", "image/png"),
-                    headers={"Cache-Control": "max-age=300"})
+    # El backend da un PNG de ~2 MB; en el celular por Wi-Fi tarda y a veces se corta a
+    # medias. Se envía como JPEG (mismo tamaño en píxeles, ~10 veces más liviano).
+    contenido = await asyncio.to_thread(_a_jpeg, r.content)
+    return Response(contenido, media_type="image/jpeg", headers={"Cache-Control": "max-age=300"})
+
+
+_JPEG_CACHE: dict[str, bytes] = {}
+
+
+def _a_jpeg(png: bytes) -> bytes:
+    clave = hashlib.sha1(png).hexdigest()
+    if clave not in _JPEG_CACHE:
+        from PIL import Image
+        salida = io.BytesIO()
+        Image.open(io.BytesIO(png)).convert("RGB").save(salida, "JPEG", quality=85,
+                                                         optimize=True, progressive=True)
+        if len(_JPEG_CACHE) > 32:
+            _JPEG_CACHE.clear()
+        _JPEG_CACHE[clave] = salida.getvalue()
+    return _JPEG_CACHE[clave]
 
 
 @app.get("/rostro.json")

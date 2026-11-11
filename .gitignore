@@ -46,3 +46,6 @@ modelos-stt/
 
 # ---- Audios generados por la síntesis -----------------------------------------
 audios/generados/
+
+# ---- Certificado autofirmado de HTTPS (se genera en cada máquina) -----------
+nginx/certs/

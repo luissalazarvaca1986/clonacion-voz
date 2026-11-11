@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Luisa</title>
 <style>
   :root {
@@ -18,7 +18,8 @@
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
 
   /* Sala: avatar (alto flexible, siempre 16:9) · línea de estado · pie fijo */
-  .sala { height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; }
+  .sala { height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr); }
   main { min-height: 0; padding: 16px 16px 0; display: grid; place-items: center; container-type: size; }
   .escenario { position: relative; width: min(100cqw, 100cqh * 16 / 9);
     aspect-ratio: 16 / 9; border-radius: 18px; overflow: hidden; background: #000;
@@ -74,6 +75,8 @@
   .entrada { position: fixed; inset: 0; z-index: 5; overflow-y: auto; background:
     radial-gradient(ellipse at 50% 0%, #1b2340 0%, #0b0f1c 60%, var(--fondo) 100%);
     display: flex; flex-direction: column; align-items: center; padding: 40px 16px 32px; gap: 28px; }
+  /* Que nada se encoja: si no cabe en el alto, la pantalla hace scroll en vez de cortar */
+  .entrada > * { flex-shrink: 0; }
   .entrada .titulo { text-align: center; width: min(100%, 520px); }
   .entrada .titulo small { display: block; color: var(--tenue); font-size: 14px; margin-bottom: 8px; }
   .selector-avatar { position: relative; }
@@ -239,6 +242,46 @@
   dialog.modelos .pie button:disabled { opacity: .4; cursor: default; }
   dialog.modelos .pie .secundario { background: transparent; color: var(--texto);
     box-shadow: inset 0 0 0 1px rgba(255,255,255,.25); }
+  /* ---- Celular en vertical: los controles no caben en una fila; la caja de texto baja
+     a su propia línea y los botones quedan arriba ---- */
+  @media (max-width: 600px) {
+    .pie-sala { flex-wrap: wrap; gap: 8px 12px; padding: 0 12px 14px; }
+    .escribir { order: 2; flex: 1 1 100%; }
+    /* Pantalla completa: la barra ocupa dos filas, así que el estado sube y el botón de
+       pantalla completa pasa arriba para no quedar encima de los controles */
+    body.completa .pie-sala { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+    body.completa .estado { bottom: 128px; }
+    body.completa .completa-btn { top: 12px; bottom: auto; }
+    main { padding: 12px 12px 0; }
+    .estado { font-size: 14px; padding: 8px 12px; }
+  }
+
+  /* ---- Celular en horizontal: poca altura, así que todo va en dos columnas ---- */
+  @media (orientation: landscape) and (max-height: 500px) {
+    /* Entrada: vista previa a la izquierda; avatar, botones y ajustes a la derecha */
+    .entrada { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+      grid-template-rows: auto auto auto; align-content: center; gap: 10px 20px;
+      padding: 12px max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left)); }
+    .entrada .tarjeta { display: contents; }
+    .entrada .vista { grid-column: 1; grid-row: 1 / span 3; align-self: center; justify-self: center;
+      width: min(100%, (100dvh - 24px) * 16 / 9); border-radius: 14px; overflow: hidden;
+      box-shadow: 0 24px 60px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06); }
+    .entrada .titulo { grid-column: 2; grid-row: 1; width: 100%; }
+    .entrada .titulo small { font-size: 12px; margin-bottom: 4px; }
+    .selector-avatar select { font-size: 20px; padding: 4px 32px; }
+    .entrada .acciones { grid-column: 2; grid-row: 2; padding: 0; gap: 8px; }
+    .entrar { padding: 10px 22px; min-width: 0; font-size: 15px; }
+    .controles { gap: 6px 16px; }
+    .aviso { min-height: 0; font-size: 12px; }
+    .adicionales { grid-column: 2; grid-row: 3; width: 100%; }
+    .adicionales h2 { font-size: 12px; margin-bottom: 6px; }
+    .franja { grid-template-columns: 1fr; }
+    .franja > * { padding: 8px 12px; font-size: 13px; }
+    .franja > * + * { border-left: 0; border-top: 1px solid rgba(255,255,255,.08); }
+    dialog.modelos { max-height: 92dvh; }
+    dialog.modelos form { padding: 14px 16px; gap: 10px; }
+  }
+
   [hidden] { display: none !important; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 </style>
