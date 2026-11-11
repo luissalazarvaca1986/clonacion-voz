@@ -736,6 +736,7 @@ PRONUNCIACION = {
     "Valicyber": "Vali Sáiber",
     "ValiCyber": "Vali Sáiber",
     "Ironchip": "Áiron chip",
+    "Okta": "Ócta",        # escrito «Okta» se oía «O Keita» («okey ta»)
     "IT": "í té",          # siglas en mayúsculas: solo se cambian escritas así
 }
 
