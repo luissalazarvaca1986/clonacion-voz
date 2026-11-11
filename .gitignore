@@ -49,3 +49,5 @@ audios/generados/
 
 # ---- Certificado autofirmado de HTTPS (se genera en cada máquina) -----------
 nginx/certs/
+# CA local (su clave privada firma los certificados): nunca en git
+nginx/ca/
