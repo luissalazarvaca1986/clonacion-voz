@@ -57,7 +57,7 @@ MAX_PALABRAS = int(os.getenv("CONVERSA_MAX_PALABRAS", "260"))
 # El primer clip es corto para que Luisa empiece a hablar cuanto antes; los demás,
 # más largos para amortizar el arranque de cada proceso de animación.
 PALABRAS_PRIMER_CLIP = int(os.getenv("CONVERSA_PALABRAS_PRIMER_CLIP", "6"))
-PALABRAS_CLIP = int(os.getenv("CONVERSA_PALABRAS_CLIP", "25"))
+PALABRAS_CLIP = int(os.getenv("CONVERSA_PALABRAS_CLIP", "30"))
 CLIPS_EN_PARALELO = int(os.getenv("CONVERSA_CLIPS_EN_PARALELO", "3"))
 FRAGMENTOS = int(os.getenv("CONVERSA_FRAGMENTOS", "6"))
 SEGUNDOS_REPOSO = float(os.getenv("CONVERSA_SEGUNDOS_REPOSO", "8"))
@@ -535,6 +535,7 @@ def consulta_de_busqueda(pregunta: str, sesion: str, productos: set[str]) -> str
 
 def limpiar_para_voz(texto: str) -> str:
     texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.S)
+    texto = re.sub(r"\bTI\b", "IT", texto)   # «gestión de TI» → «gestión de IT» (no «para ti»)
     texto = re.sub(r"[*_#`>|~]+", "", texto)
     texto = re.sub(r"^\s*(?:[-•]|\d+[.)])\s+", "", texto, flags=re.M)
     texto = re.sub(r"https?://\S+", "", texto)
@@ -582,21 +583,54 @@ async def frases_del_llm(cliente: httpx.AsyncClient, perfil: Perfil, sesion: str
         yield limpia
 
 
+def _partir_frase(frase: str, maximo: int) -> list[str]:
+    """Una frase larga (p. ej. una lista de productos) se parte por comas, punto y coma o dos
+    puntos en trozos de hasta `maximo` palabras; si no hay dónde, por palabras."""
+    if len(frase.split()) <= maximo:
+        return [frase]
+    trozos: list[str] = []
+    actual: list[str] = []
+    for parte in re.split(r"(?<=[,;:])\s+", frase):
+        if actual and len(" ".join(actual + [parte]).split()) > maximo:
+            trozos.append(" ".join(actual))
+            actual = []
+        actual.append(parte)
+    if actual:
+        trozos.append(" ".join(actual))
+    final: list[str] = []
+    for t in trozos:
+        palabras = t.split()
+        final += [" ".join(palabras[i:i + maximo]) for i in range(0, len(palabras), maximo)]
+    return final
+
+
 async def clips_de_respuesta(frases: AsyncIterator[str]) -> AsyncIterator[str]:
-    """Agrupa frases en clips y corta la respuesta al llegar al máximo de palabras."""
+    """Agrupa frases en clips de tamaño creciente (6, 12, 24… hasta PALABRAS_CLIP palabras):
+    el primero sale enseguida y cada uno siguiente, algo más largo, se genera mientras suena
+    el anterior, así no quedan silencios entre clips. Corta al llegar al máximo de palabras."""
     actual: list[str] = []
     palabras_total = 0
-    primero = True
+    numero = 0
+
+    def objetivo() -> int:
+        return min(PALABRAS_CLIP, PALABRAS_PRIMER_CLIP * 2 ** numero)
+
     async for frase in frases:
-        n = len(frase.split())
-        if palabras_total + n > MAX_PALABRAS:
-            break
-        actual.append(frase)
-        palabras_total += n
-        objetivo = PALABRAS_PRIMER_CLIP if primero else PALABRAS_CLIP
-        if sum(len(f.split()) for f in actual) >= objetivo:
-            yield " ".join(actual)
-            actual, primero = [], False
+        for trozo in _partir_frase(frase, PALABRAS_CLIP):
+            n = len(trozo.split())
+            if palabras_total + n > MAX_PALABRAS:
+                if actual:
+                    yield " ".join(actual)
+                return
+            # Si el trozo no cabe en el clip en curso y este ya tiene algo, se cierra antes
+            if actual and sum(len(f.split()) for f in actual) + n > objetivo() * 1.5:
+                yield " ".join(actual)
+                actual, numero = [], numero + 1
+            actual.append(trozo)
+            palabras_total += n
+            if sum(len(f.split()) for f in actual) >= objetivo():
+                yield " ".join(actual)
+                actual, numero = [], numero + 1
     if actual:
         yield " ".join(actual)
 
@@ -604,12 +638,14 @@ async def clips_de_respuesta(frases: AsyncIterator[str]) -> AsyncIterator[str]:
 # ---- Pronunciación: nombres en inglés que la voz lee a la española ---------------
 # Solo cambia el texto que se envía a la voz; en pantalla se sigue viendo bien escrito.
 # Probado con ida y vuelta (voz → Whisper): «Dynatrace» se oía «Dina Traes», «Dáinatreis»
-# se oye «Dynatrace». Se pueden añadir o cambiar en DIR_DATOS/pronunciacion.json.
+# se oye «Dynatrace»; «IT» se dice con las letras en español («í té»; «i te» se oía «IP»).
+# Las claves en MAYÚSCULAS (siglas) distinguen mayúsculas. Se pueden añadir o cambiar en DIR_DATOS/pronunciacion.json.
 PRONUNCIACION = {
     "Dynatrace": "Dáinatreis",
     "Valicyber": "Vali Sáiber",
     "ValiCyber": "Vali Sáiber",
     "Ironchip": "Áiron chip",
+    "IT": "í té",          # siglas en mayúsculas: solo se cambian escritas así
 }
 
 
@@ -624,7 +660,8 @@ def _pronunciacion() -> dict[str, str]:
 
 def para_voz(texto: str) -> str:
     for palabra, dicha in _pronunciacion().items():
-        texto = re.sub(rf"\b{re.escape(palabra)}\b", dicha, texto, flags=re.I)
+        texto = re.sub(rf"\b{re.escape(palabra)}\b", dicha, texto,
+                       flags=0 if palabra.isupper() else re.I)
     return texto
 
 
