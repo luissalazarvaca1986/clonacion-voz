@@ -22,6 +22,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import time
 import unicodedata
@@ -452,6 +453,43 @@ async def documento_completo(cliente: httpx.AsyncClient, nombre: str) -> str:
     return ""
 
 
+_DESCRIPCIONES: dict[str, str] = {}
+
+
+async def productos_que_faltan(cliente: httpx.AsyncClient, documento: str,
+                               lista: str) -> list[str]:
+    """Productos del catálogo de SecondBrain que la tabla del documento no nombra (p. ej.
+    Valicyber no está en la tabla de la web): se añaden con la primera frase de su propio
+    conocimiento que diga qué es."""
+    propio = producto_de(documento)
+    filas = []
+    for p in sorted(await catalogo_productos(cliente)):
+        if p == propio or _clave(p) in _clave(lista):
+            continue
+        if p not in _DESCRIPCIONES:
+            descripcion = ""
+            try:
+                for f in await buscar_secondbrain(cliente, f"¿Qué es {p} y para qué sirve?"):
+                    if producto_de(f["documento"]) != p:
+                        continue
+                    frases = [" ".join(x.split()) for x in re.split(
+                        r"(?<=[.!?])\s+|\n+", re.sub(r"[*#|>`]+", " ", f["texto"]))]
+                    # La frase que lo define («Valicyber es un…»), nunca una cabecera
+                    # interna (fecha, «Uso interno», fuentes con nombres de clientes)
+                    utiles = [x for x in frases if _clave(p) in _clave(x) and 40 < len(x) < 300
+                              and not re.search(r"uso interno|actualizado|fuente|propuesta|"
+                                                r"cliente|reseller", x, re.I)]
+                    descripcion = next((x for x in utiles
+                                        if re.search(r"\b(es|son)\b", x, re.I)), "")
+                    if descripcion:
+                        break
+            except (httpx.HTTPError, KeyError, IndexError, ValueError):
+                pass
+            _DESCRIPCIONES[p] = descripcion
+        filas.append(f"- {p}: {_DESCRIPCIONES[p]}" if _DESCRIPCIONES[p] else f"- {p}")
+    return filas
+
+
 async def con_lista_completa(cliente: httpx.AsyncClient, consulta: str,
                              fragmentos: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Si la pregunta pide la lista de productos y los fragmentos vienen de un documento con
@@ -468,6 +506,7 @@ async def con_lista_completa(cliente: httpx.AsyncClient, consulta: str,
                  for n, que, desc in _FILA.findall(seccion)
                  if que.strip().lower() not in ("qué es", "---")]
         if len(filas) >= 3:
+            filas += await productos_que_faltan(cliente, nombre, "\n".join(filas))
             lista = {"documento": nombre, "distancia": 0.0, "texto":
                      f"Lista completa de productos y plataformas ({len(filas)}):\n"
                      + "\n".join(filas)}
@@ -562,6 +601,33 @@ async def clips_de_respuesta(frases: AsyncIterator[str]) -> AsyncIterator[str]:
         yield " ".join(actual)
 
 
+# ---- Pronunciación: nombres en inglés que la voz lee a la española ---------------
+# Solo cambia el texto que se envía a la voz; en pantalla se sigue viendo bien escrito.
+# Probado con ida y vuelta (voz → Whisper): «Dynatrace» se oía «Dina Traes», «Dáinatreis»
+# se oye «Dynatrace». Se pueden añadir o cambiar en DIR_DATOS/pronunciacion.json.
+PRONUNCIACION = {
+    "Dynatrace": "Dáinatreis",
+    "Valicyber": "Vali Sáiber",
+    "ValiCyber": "Vali Sáiber",
+    "Ironchip": "Áiron chip",
+}
+
+
+def _pronunciacion() -> dict[str, str]:
+    reglas = dict(PRONUNCIACION)
+    try:
+        reglas.update(json.loads((DIR_DATOS / "pronunciacion.json").read_text("utf-8")))
+    except (OSError, ValueError):
+        pass
+    return reglas
+
+
+def para_voz(texto: str) -> str:
+    for palabra, dicha in _pronunciacion().items():
+        texto = re.sub(rf"\b{re.escape(palabra)}\b", dicha, texto, flags=re.I)
+    return texto
+
+
 async def sintetizar(cliente: httpx.AsyncClient, texto: str, video: bool, perfil: Perfil,
                      tareas: set[str] | None = None) -> dict[str, Any]:
     """Voz (+ vídeo animado de Luisa si `video`) con el backend. Devuelve el evento «fin»
@@ -612,7 +678,8 @@ async def generar_clip(turno: Turno, indice: int, texto: str) -> None:
             return
         inicio = time.time()
         async with httpx.AsyncClient() as cliente:
-            ev = await sintetizar(cliente, texto, turno.video, turno.perfil, turno.tareas_backend)
+            ev = await sintetizar(cliente, para_voz(texto), turno.video, turno.perfil,
+                                  turno.tareas_backend)
         log.info("Clip %d listo en %.1f s (%.1f s de audio)", indice,
                  time.time() - inicio, ev.get("duracion") or 0)
         await turno.emitir("clip", indice=indice, url=ev["url"],
@@ -621,39 +688,70 @@ async def generar_clip(turno: Turno, indice: int, texto: str) -> None:
 
 
 # ---- Relleno: «Déjame pensarlo…» mientras se prepara la respuesta --------------
-TEXTO_RELLENO = os.getenv("CONVERSA_TEXTO_RELLENO", "Déjame pensarlo, te respondo en breve.")
+# Varias frases para que no suene monótono: en cada pregunta se sortea una entre las que
+# ya tienen audio, sin repetir la última de esa sesión. Se pueden cambiar con
+# CONVERSA_TEXTOS_RELLENO (frases separadas por «|»).
+TEXTOS_RELLENO = [t.strip() for t in os.getenv("CONVERSA_TEXTOS_RELLENO", "|".join([
+    "Déjame pensarlo, te respondo en breve.",
+    "Buena pregunta, dame un momento.",
+    "Un segundo, reviso la información.",
+    "Déjame consultarlo y te cuento.",
+    "Permíteme un momento, lo busco.",
+    "Interesante, déjame revisar.",
+    "Dame un instante, por favor.",
+    "Lo reviso y te respondo enseguida.",
+    "Muy bien, déjame ver qué tengo sobre eso.",
+    "Perfecto, un momento mientras lo consulto.",
+    "Entendido, dame unos segundos.",
+    "Claro, ya lo busco.",
+])).split("|") if t.strip()]
 RELLENO = os.getenv("CONVERSA_RELLENO", "1") == "1"
 _relleno_cerrojo = asyncio.Lock()
+ULTIMO_RELLENO: dict[str, str] = {}   # sesión → última frase usada
 
 
-def _registro_relleno(perfil: Perfil, video: bool) -> Path:
-    clave = hashlib.sha1(f"{TEXTO_RELLENO}|{perfil.voz}|{perfil.avatar}|{perfil.escena}|"
+def _registro_relleno(perfil: Perfil, video: bool, texto: str) -> Path:
+    clave = hashlib.sha1(f"{texto}|{perfil.voz}|{perfil.avatar}|{perfil.escena}|"
                          f"{perfil.tts}".encode()).hexdigest()[:10]
     return DIR_DATOS / f"relleno-{'video' if video else 'audio'}-{clave}.json"
 
 
-def url_relleno(perfil: Perfil, video: bool) -> str | None:
-    """URL del relleno ya generado, o None si aún no existe (o se borró)."""
-    if not RELLENO:
-        return None
+def _url_relleno(perfil: Perfil, video: bool, texto: str) -> str | None:
+    """URL del relleno de esa frase ya generado, o None si aún no existe (o se borró)."""
     try:
-        url = json.loads(_registro_relleno(perfil, video).read_text())["url"]
+        url = json.loads(_registro_relleno(perfil, video, texto).read_text())["url"]
     except (OSError, ValueError, KeyError):
         return None
     carpeta = DIR_VIDEOS if url.startswith("/videos/") else DIR_AUDIOS
     return url if (carpeta / Path(url).name).is_file() else None
 
 
-async def crear_relleno(perfil: Perfil, video: bool) -> str | None:
+def elegir_relleno(perfil: Perfil, video: bool, sesion: str) -> tuple[str, str] | None:
+    """Sortea una frase de las que ya tienen audio, sin repetir la última de la sesión."""
+    if not RELLENO:
+        return None
+    listos = [(t, u) for t in TEXTOS_RELLENO if (u := _url_relleno(perfil, video, t))]
+    if not listos:
+        return None
+    candidatos = [x for x in listos if x[0] != ULTIMO_RELLENO.get(sesion)] or listos
+    texto, url = random.choice(candidatos)
+    ULTIMO_RELLENO[sesion] = texto
+    return texto, url
+
+
+async def crear_relleno(perfil: Perfil, video: bool) -> bool:
+    """Genera el audio (o vídeo) de las frases que aún no lo tienen, una tras otra."""
     async with _relleno_cerrojo:
-        if url := url_relleno(perfil, video):
-            return url
-        async with httpx.AsyncClient() as cliente:
-            ev = await sintetizar(cliente, TEXTO_RELLENO, video, perfil)
-        DIR_DATOS.mkdir(parents=True, exist_ok=True)
-        _registro_relleno(perfil, video).write_text(json.dumps({"url": ev["url"]}))
-        log.info("Relleno (%s) creado: %s", "vídeo" if video else "audio", ev["url"])
-        return ev["url"]
+        for texto in TEXTOS_RELLENO:
+            if _url_relleno(perfil, video, texto):
+                continue
+            async with httpx.AsyncClient() as cliente:
+                ev = await sintetizar(cliente, para_voz(texto), video, perfil)
+            DIR_DATOS.mkdir(parents=True, exist_ok=True)
+            _registro_relleno(perfil, video, texto).write_text(json.dumps({"url": ev["url"]}))
+            log.info("Relleno (%s) creado: «%s» → %s", "vídeo" if video else "audio",
+                     texto, ev["url"])
+        return True
 
 
 async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) -> None:
@@ -673,8 +771,8 @@ async def procesar(turno: Turno, wav: bytes | None, texto: str | None = None) ->
                 await _cancelar_turno(anterior)
             await turno.emitir("transcripcion", texto=pregunta,
                                segundos=round(time.time() - inicio, 2))
-            if relleno := url_relleno(turno.perfil, turno.video):
-                await turno.emitir("relleno", url=relleno, texto=TEXTO_RELLENO)
+            if relleno := elegir_relleno(turno.perfil, turno.video, turno.sesion):
+                await turno.emitir("relleno", url=relleno[1], texto=relleno[0])
 
             productos = await catalogo_productos(cliente)
             consulta = consulta_de_busqueda(pregunta, turno.sesion, productos)
