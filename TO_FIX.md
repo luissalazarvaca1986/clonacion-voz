@@ -193,3 +193,12 @@ Cambios en `conversa/app.py`:
 
 Pruebas: `conversa/bench/pruebas_conocimiento.py` (11 productos, 2 preguntas dobles y una secuencia de 5 en la misma sesión). Antes: falló la pregunta doble y, de forma intermitente, la secuencia («¿Qué es NinjaOne?» → «SentinelOne es…»). Después: **18/18 en dos corridas**, seguimiento correcto y prueba en Chrome por la red OK (NinjaOne → Prompt Security → los dos, en la misma sesión).
 Pendiente: no hay documento que describa a Rattio como empresa; Juan Carlos cargará un `.md`. Ojo: el set de pruebas genera vídeo en cada turno y llena la cola de clips; correrlo con la sala sin uso.
+
+### NinjaOne / Prompt Security mezclados (revisado el 10-nov-2026)
+
+- En el historial de la sala, «¿Qué es NinjaOne?» llegó a responder que NinjaOne «integra… seguridad de IA como Prompt Security» y que era «la capa de operación diaria de SentinelOne».
+- Clasificación: correcta (cada documento solo está en la colección de su producto, más `rattio`/`ficha`/`estrategia`/`plan_marketing_2027`/`conocimiento`).
+- Causa: el fragmento más cercano a «¿Qué es NinjaOne?» era el párrafo «Cómo encaja con el resto del portafolio Rattio» de *NinjaOne - plan_mkt_2027_ninjaone*, que terminaba con «Okta aporta la identidad y Prompt Security… la seguridad del uso de IA generativa en los mismos equipos». El LLM de 2B se lo atribuía a NinjaOne.
+- Corrección: se quitó esa frase del documento en SecondBrain (respaldo en `~/respaldo_secondbrain_261110/`) y se reindexó.
+- Pruebas: `pruebas_conocimiento.py` ahora usa `medio=audio` (no llena la cola de vídeo), detecta términos cruzados NinjaOne↔Prompt Security, Rattio «socio de Rattio», y suma una secuencia NinjaOne→Prompt→NinjaOne→Prompt y dos preguntas de uso. Resultado: 23/24 y 23/24; las dos fallas eran falsos positivos del verificador, ya ajustado.
+- Pendiente: «¿Qué es Rattio?» respondió «Rattio es un socio tecnológico de Rattio» el 9-nov (la prueba ya lo detecta).
